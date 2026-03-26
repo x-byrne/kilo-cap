@@ -112,7 +112,7 @@ export function isCgtDiscountEligible(
   return diffDays > CGT_DISCOUNT_DAYS;
 }
 
-function sortParcelsByStrategy(
+export function sortParcelsByStrategy(
   parcels: Parcel[],
   strategy: MatchStrategy,
 ): Parcel[] {
@@ -290,7 +290,11 @@ function matchAutomatic(
 
   for (const sell of sells) {
     const codeParcels = parcelsByCode.get(sell.code) || [];
-    const availableParcels = codeParcels.filter((p) => p.unitsRemaining > 0);
+    const availableParcels = codeParcels.filter(
+      (p) =>
+        p.unitsRemaining > 0 &&
+        new Date(p.date).getTime() <= new Date(sell.date).getTime(),
+    );
 
     if (availableParcels.length === 0) {
       unmatchedSells.push(sell);
