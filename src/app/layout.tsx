@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Next.js Template",
-  description: "A minimal Next.js starter template",
+  title: "Australian CGT Calculator",
+  description:
+    "Match share purchases and sales, calculate capital gains, and optimise for CGT discount eligibility",
 };
 
 export default function RootLayout({
