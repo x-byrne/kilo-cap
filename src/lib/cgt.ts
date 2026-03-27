@@ -401,6 +401,54 @@ export function formatDate(dateStr: string): string {
   });
 }
 
+export function getFinancialYear(dateStr: string): number {
+  const d = new Date(dateStr);
+  const y = d.getFullYear();
+  return d.getMonth() >= 6 ? y + 1 : y; // months 0-indexed, 6 = July
+}
+
+export function getFinancialYearLabel(fy: number): string {
+  return `FY${fy - 1}/${String(fy).slice(2)}`;
+}
+
+export function getFinancialYearRange(fy: number): {
+  start: string;
+  end: string;
+} {
+  return {
+    start: `${fy - 1}-07-01`,
+    end: `${fy}-06-30`,
+  };
+}
+
+export function getTradeFinancialYears(trades: Trade[]): number[] {
+  const fySet = new Set<number>();
+  for (const t of trades) {
+    if (t.date) {
+      fySet.add(getFinancialYear(t.date));
+    }
+  }
+  return Array.from(fySet).sort((a, b) => b - a);
+}
+
+export function filterTradesByFinancialYear(
+  trades: Trade[],
+  fy: number,
+): Trade[] {
+  const { start, end } = getFinancialYearRange(fy);
+  const startTime = new Date(start).getTime();
+  const endTime = new Date(end).getTime() + 86400000; // inclusive end of day
+
+  return trades.map((t) => t).filter((t) => {
+    if (t.action === "Sell") {
+      const tTime = new Date(t.date).getTime();
+      return tTime >= startTime && tTime < endTime;
+    }
+    // Include all buys - parcels purchased before the FY may be sold within it
+    return true;
+  });
+}
+
 export const STRATEGY_LABELS: Record<MatchStrategy, string> = {
   fifo: "First In, First Out (FIFO)",
   lifo: "Last In, First Out (LIFO)",

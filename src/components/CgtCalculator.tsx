@@ -18,6 +18,10 @@ import {
   formatDate,
   STRATEGY_LABELS,
   STRATEGY_DESCRIPTIONS,
+  getTradeFinancialYears,
+  getFinancialYear,
+  getFinancialYearLabel,
+  filterTradesByFinancialYear,
 } from "@/lib/cgt";
 
 const SAMPLE_CSV = `trade_id,match_id,date,action,code,units,price,brokerage,total
@@ -370,6 +374,8 @@ export default function CgtCalculator() {
   const [lockedMatchKeys, setLockedMatchKeys] = useState<Set<string>>(
     new Set(),
   );
+  const [selectedFy, setSelectedFy] = useState<number | null>(null);
+  const [financialYears, setFinancialYears] = useState<number[]>([]);
 
   const applyResults = useCallback(
     (
@@ -396,7 +402,12 @@ export default function CgtCalculator() {
         return;
       }
       setTrades(parsed);
-      const result = recalculate(parsed, strategy, lockedMatchKeys);
+      const years = getTradeFinancialYears(parsed);
+      setFinancialYears(years);
+      const fy = years.length > 0 ? years[0] : null;
+      setSelectedFy(fy);
+      const filtered = fy ? filterTradesByFinancialYear(parsed, fy) : parsed;
+      const result = recalculate(filtered, strategy, lockedMatchKeys);
       applyResults(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to parse CSV");
@@ -443,10 +454,90 @@ export default function CgtCalculator() {
   const handleUnlockAll = useCallback(() => {
     setLockedMatchKeys(new Set());
     if (trades.length > 0) {
-      const result = recalculate(trades, strategy, new Set());
+      const filtered = selectedFy
+        ? filterTradesByFinancialYear(trades, selectedFy)
+        : trades;
+      const result = recalculate(filtered, strategy, new Set());
       applyResults(result);
     }
-  }, [trades, strategy, applyResults]);
+  }, [trades, strategy, selectedFy, applyResults]);
+
+  const handleFyChange = useCallback(
+    (fy: number | null) => {
+      setSelectedFy(fy);
+      if (trades.length > 0) {
+        const filtered = fy
+          ? filterTradesByFinancialYear(trades, fy)
+          : trades;
+        const result = recalculate(filtered, strategy, lockedMatchKeys);
+        applyResults(result);
+      }
+    },
+    [trades, strategy, lockedMatchKeys, applyResults],
+  );
+
+  const handleExport = useCallback(() => {
+    if (!matches.length && !unmatchedSells.length) return;
+
+    const header =
+      "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,Status";
+    const rows: string[] = [];
+
+    for (const m of matches) {
+      const heldDays = Math.round(
+        (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
+          86400000,
+      );
+      rows.push(
+        [
+          m.sellTradeId,
+          m.buyTradeId,
+          m.code,
+          m.units,
+          m.buyDate,
+          m.sellDate,
+          heldDays,
+          m.sellProceeds.toFixed(2),
+          m.buyCostBase.toFixed(2),
+          m.capitalGain.toFixed(2),
+          m.cgtDiscountEligible ? "Yes" : "No",
+          m.discountedGain.toFixed(2),
+          "Matched",
+        ].join(","),
+      );
+    }
+
+    for (const s of unmatchedSells) {
+      const proceeds = s.price * s.units - s.brokerage;
+      rows.push(
+        [
+          s.tradeId,
+          "",
+          s.code,
+          s.units,
+          "",
+          s.date,
+          "",
+          proceeds.toFixed(2),
+          "",
+          "",
+          "",
+          "",
+          "Unmatched",
+        ].join(","),
+      );
+    }
+
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const fyLabel = selectedFy ? `_FY${selectedFy}` : "_all";
+    a.href = url;
+    a.download = `cgt_report${fyLabel}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [matches, unmatchedSells, selectedFy]);
 
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -535,6 +626,61 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
             )}
           </div>
         </section>
+
+        {/* FY Filter & Export Toolbar */}
+        {trades.length > 0 && (
+          <section className="mb-8">
+            <div className="flex flex-wrap items-center gap-4">
+              {financialYears.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <label
+                    htmlFor="fy-select"
+                    className="text-sm text-neutral-400"
+                  >
+                    Financial Year
+                  </label>
+                  <select
+                    id="fy-select"
+                    value={selectedFy ?? ""}
+                    onChange={(e) =>
+                      handleFyChange(
+                        e.target.value ? parseInt(e.target.value, 10) : null,
+                      )
+                    }
+                    className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">All Years</option>
+                    {financialYears.map((fy) => (
+                      <option key={fy} value={fy}>
+                        {getFinancialYearLabel(fy)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <button
+                onClick={handleExport}
+                disabled={!matches.length && !unmatchedSells.length}
+                className="text-sm px-4 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-300 transition-colors flex items-center gap-2"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                  />
+                </svg>
+                Export Report
+              </button>
+            </div>
+          </section>
+        )}
 
         {/* Strategy Selector */}
         {trades.length > 0 && (
@@ -657,7 +803,19 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
             {activeTab === "parcels" && (
               <ParcelsTable parcels={remainingParcels} />
             )}
-            {activeTab === "trades" && <TradesTable trades={trades} />}
+            {activeTab === "trades" && (
+              <TradesTable
+                trades={
+                  selectedFy
+                    ? trades.filter(
+                        (t) =>
+                          t.action === "Buy" ||
+                          getFinancialYear(t.date) === selectedFy,
+                      )
+                    : trades
+                }
+              />
+            )}
           </section>
         )}
       </main>
