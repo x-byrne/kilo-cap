@@ -735,9 +735,9 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                 value={formatCurrency(summary.totalCapitalGain)}
                 highlight={
                   summary.totalCapitalGain > 0
-                    ? "text-red-400"
+                    ? "text-green-400"
                     : summary.totalCapitalGain < 0
-                      ? "text-green-400"
+                      ? "text-red-400"
                       : ""
                 }
               />
@@ -746,9 +746,9 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                 value={formatCurrency(summary.totalDiscountedGain)}
                 highlight={
                   summary.totalDiscountedGain > 0
-                    ? "text-red-400"
+                    ? "text-green-400"
                     : summary.totalDiscountedGain < 0
-                      ? "text-green-400"
+                      ? "text-red-400"
                       : ""
                 }
               />
@@ -972,7 +972,7 @@ function MatchResultsTable({
                     </td>
                     <td
                       className={`px-4 py-3 text-right font-mono ${
-                        m.capitalGain >= 0 ? "text-red-400" : "text-green-400"
+                        m.capitalGain >= 0 ? "text-green-400" : "text-red-400"
                       }`}
                     >
                       {formatCurrency(m.capitalGain)}
@@ -991,8 +991,8 @@ function MatchResultsTable({
                     <td
                       className={`px-4 py-3 text-right font-mono font-medium ${
                         m.discountedGain >= 0
-                          ? "text-red-400"
-                          : "text-green-400"
+                          ? "text-green-400"
+                          : "text-red-400"
                       }`}
                     >
                       {formatCurrency(m.discountedGain)}
@@ -1027,8 +1027,8 @@ function MatchResultsTable({
                 <td
                   className={`px-4 py-3 text-right font-mono ${
                     matches.reduce((s, m) => s + m.capitalGain, 0) >= 0
-                      ? "text-red-400"
-                      : "text-green-400"
+                      ? "text-green-400"
+                      : "text-red-400"
                   }`}
                 >
                   {formatCurrency(
@@ -1039,8 +1039,8 @@ function MatchResultsTable({
                 <td
                   className={`px-4 py-3 text-right font-mono ${
                     matches.reduce((s, m) => s + m.discountedGain, 0) >= 0
-                      ? "text-red-400"
-                      : "text-green-400"
+                      ? "text-green-400"
+                      : "text-red-400"
                   }`}
                 >
                   {formatCurrency(
