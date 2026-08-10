@@ -22,7 +22,12 @@ import {
   getFinancialYear,
   getFinancialYearLabel,
   filterTradesByFinancialYear,
+  exportCsvReport,
 } from "@/lib/cgt";
+import { SummaryCard } from "@/components/SummaryCard";
+import { MatchResultsTable } from "@/components/MatchResultsTable";
+import { ParcelsTable } from "@/components/ParcelsTable";
+import { TradesTable } from "@/components/TradesTable";
 
 const SAMPLE_CSV = `trade_id,match_id,date,action,code,units,price,brokerage,total
 T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
@@ -318,14 +323,14 @@ function matchAutomaticWithAvailable(
       if (remainingSellUnits <= 0) break;
 
       const matchedUnits = Math.min(remainingSellUnits, parcel.unitsRemaining);
-      parcel.unitsRemaining -= matchedUnits;
+      const updatedParcel = { ...parcel, unitsRemaining: parcel.unitsRemaining - matchedUnits };
       remainingSellUnits -= matchedUnits;
 
       const sellBrokeragePortion =
         (matchedUnits / sell.units) * sell.brokerage;
       const netProceeds = sell.price * matchedUnits - sellBrokeragePortion;
       const buyCostBase =
-        (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
+        (updatedParcel.totalCostBase / updatedParcel.totalUnits) * matchedUnits;
       const capitalGain = netProceeds - buyCostBase;
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
       const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
@@ -388,7 +393,9 @@ export default function CgtCalculator() {
       setMatches(result.matches);
       setUnmatchedSells(result.unmatchedSells);
       setRemainingParcels(result.remainingParcels);
-      setSummary(calculateCgtSummary(result.matches));
+      setSummary(
+        calculateCgtSummary(result.matches, result.unmatchedSells, result.remainingParcels),
+      );
     },
     [],
   );
@@ -478,57 +485,7 @@ export default function CgtCalculator() {
 
   const handleExport = useCallback(() => {
     if (!matches.length && !unmatchedSells.length) return;
-
-    const header =
-      "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,Status";
-    const rows: string[] = [];
-
-    for (const m of matches) {
-      const heldDays = Math.round(
-        (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
-          86400000,
-      );
-      rows.push(
-        [
-          m.sellTradeId,
-          m.buyTradeId,
-          m.code,
-          m.units,
-          m.buyDate,
-          m.sellDate,
-          heldDays,
-          m.sellProceeds.toFixed(2),
-          m.buyCostBase.toFixed(2),
-          m.capitalGain.toFixed(2),
-          m.cgtDiscountEligible ? "Yes" : "No",
-          m.discountedGain.toFixed(2),
-          "Matched",
-        ].join(","),
-      );
-    }
-
-    for (const s of unmatchedSells) {
-      const proceeds = s.price * s.units - s.brokerage;
-      rows.push(
-        [
-          s.tradeId,
-          "",
-          s.code,
-          s.units,
-          "",
-          s.date,
-          "",
-          proceeds.toFixed(2),
-          "",
-          "",
-          "",
-          "",
-          "Unmatched",
-        ].join(","),
-      );
-    }
-
-    const csv = [header, ...rows].join("\n");
+    const csv = exportCsvReport(matches, unmatchedSells, summary!, selectedFy);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -537,7 +494,7 @@ export default function CgtCalculator() {
     a.download = `cgt_report${fyLabel}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [matches, unmatchedSells, selectedFy]);
+  }, [matches, unmatchedSells, summary, selectedFy]);
 
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -823,377 +780,4 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  highlight = "",
-}: {
-  label: string;
-  value: string;
-  highlight?: string;
-}) {
-  return (
-    <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-      <div className="text-xs text-neutral-500 uppercase tracking-wider">
-        {label}
-      </div>
-      <div
-        className={`mt-1 text-xl font-semibold ${highlight || "text-neutral-100"}`}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
 
-function MatchResultsTable({
-  matches,
-  unmatchedSells,
-  lockedMatchKeys,
-  onToggleLock,
-  onLockAll,
-  onUnlockAll,
-}: {
-  matches: Match[];
-  unmatchedSells: Trade[];
-  lockedMatchKeys: Set<string>;
-  onToggleLock: (m: Match) => void;
-  onLockAll: () => void;
-  onUnlockAll: () => void;
-}) {
-  return (
-    <div>
-      {matches.length > 0 && (
-        <div className="flex items-center justify-end gap-2 mb-3">
-          <button
-            onClick={onLockAll}
-            className="text-xs px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
-          >
-            Lock All
-          </button>
-          <button
-            onClick={onUnlockAll}
-            className="text-xs px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
-          >
-            Unlock All
-          </button>
-        </div>
-      )}
-
-      {matches.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border border-neutral-800">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-neutral-900 text-neutral-400 text-left">
-                <th className="px-4 py-3 font-medium w-10">
-                  <span className="sr-only">Lock</span>
-                </th>
-                <th className="px-4 py-3 font-medium">Code</th>
-                <th className="px-4 py-3 font-medium text-right">Units</th>
-                <th className="px-4 py-3 font-medium">Buy Date</th>
-                <th className="px-4 py-3 font-medium">Sell Date</th>
-                <th className="px-4 py-3 font-medium">Held</th>
-                <th className="px-4 py-3 font-medium text-right">Proceeds</th>
-                <th className="px-4 py-3 font-medium text-right">Cost Base</th>
-                <th className="px-4 py-3 font-medium text-right">
-                  Capital Gain
-                </th>
-                <th className="px-4 py-3 font-medium text-center">
-                  CGT Discount
-                </th>
-                <th className="px-4 py-3 font-medium text-right">
-                  Taxable Gain
-                </th>
-                <th className="px-4 py-3 font-medium">Sell ID</th>
-                <th className="px-4 py-3 font-medium">Buy ID</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-800">
-              {matches.map((m, i) => {
-                const key = matchKey(m);
-                const locked = lockedMatchKeys.has(key);
-                const heldDays = Math.round(
-                  (new Date(m.sellDate).getTime() -
-                    new Date(m.buyDate).getTime()) /
-                    (1000 * 60 * 60 * 24),
-                );
-                return (
-                  <tr
-                    key={`${key}-${i}`}
-                    className={`transition-colors ${
-                      locked
-                        ? "bg-amber-500/5"
-                        : "bg-neutral-950 hover:bg-neutral-900/50"
-                    }`}
-                  >
-                    <td className="px-4 py-3">
-                      <button
-                        onClick={() => onToggleLock(m)}
-                        title={locked ? "Unlock match" : "Lock match"}
-                        className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
-                          locked
-                            ? "bg-amber-500/20 border-amber-500 text-amber-400"
-                            : "border-neutral-600 hover:border-neutral-400"
-                        }`}
-                      >
-                        {locked ? (
-                          <svg
-                            className="w-3 h-3"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={2.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-                            />
-                          </svg>
-                        ) : null}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3 font-mono font-medium">
-                      {m.code}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {m.units.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3">{formatDate(m.buyDate)}</td>
-                    <td className="px-4 py-3">{formatDate(m.sellDate)}</td>
-                    <td className="px-4 py-3 text-neutral-400">
-                      {heldDays}d
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {formatCurrency(m.sellProceeds)}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {formatCurrency(m.buyCostBase)}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right font-mono ${
-                        m.capitalGain >= 0 ? "text-green-400" : "text-red-400"
-                      }`}
-                    >
-                      {formatCurrency(m.capitalGain)}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      {m.cgtDiscountEligible ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                          50%
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-neutral-800 text-neutral-500">
-                          No
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right font-mono font-medium ${
-                        m.discountedGain >= 0
-                          ? "text-green-400"
-                          : "text-red-400"
-                      }`}
-                    >
-                      {formatCurrency(m.discountedGain)}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-neutral-400 text-xs">
-                      {m.sellTradeId}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-neutral-400 text-xs">
-                      {m.buyTradeId}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="bg-neutral-900 font-medium">
-                <td />
-                <td className="px-4 py-3" colSpan={4}>
-                  Total ({matches.length} matches)
-                </td>
-                <td />
-                <td className="px-4 py-3 text-right font-mono">
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.sellProceeds, 0),
-                  )}
-                </td>
-                <td className="px-4 py-3 text-right font-mono">
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.buyCostBase, 0),
-                  )}
-                </td>
-                <td
-                  className={`px-4 py-3 text-right font-mono ${
-                    matches.reduce((s, m) => s + m.capitalGain, 0) >= 0
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }`}
-                >
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.capitalGain, 0),
-                  )}
-                </td>
-                <td />
-                <td
-                  className={`px-4 py-3 text-right font-mono ${
-                    matches.reduce((s, m) => s + m.discountedGain, 0) >= 0
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }`}
-                >
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.discountedGain, 0),
-                  )}
-                </td>
-                <td colSpan={2} />
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      ) : (
-        <div className="text-sm text-neutral-500 py-8 text-center border border-neutral-800 rounded-lg">
-          No matches found. Try a different strategy or add more buy trades.
-        </div>
-      )}
-
-      {unmatchedSells.length > 0 && (
-        <div className="mt-4 p-4 rounded-lg border border-amber-500/30 bg-amber-500/5">
-          <h3 className="text-sm font-medium text-amber-400 mb-2">
-            Unmatched Sells ({unmatchedSells.length})
-          </h3>
-          <div className="text-sm text-neutral-400">
-            {unmatchedSells.map((s) => (
-              <div key={s.tradeId} className="flex gap-4 py-1">
-                <span className="font-mono text-amber-300">{s.tradeId}</span>
-                <span>
-                  {s.code} &mdash; {s.units.toLocaleString()} units on{" "}
-                  {formatDate(s.date)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ParcelsTable({ parcels }: { parcels: Parcel[] }) {
-  if (parcels.length === 0) {
-    return (
-      <div className="text-sm text-neutral-500 py-8 text-center">
-        All parcels have been fully matched.
-      </div>
-    );
-  }
-
-  return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-neutral-900 text-neutral-400 text-left">
-            <th className="px-4 py-3 font-medium">Buy ID</th>
-            <th className="px-4 py-3 font-medium">Code</th>
-            <th className="px-4 py-3 font-medium">Date</th>
-            <th className="px-4 py-3 font-medium text-right">Original Units</th>
-            <th className="px-4 py-3 font-medium text-right">
-              Remaining Units
-            </th>
-            <th className="px-4 py-3 font-medium text-right">
-              Cost Base/Unit
-            </th>
-            <th className="px-4 py-3 font-medium text-right">
-              Remaining Cost Base
-            </th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-800">
-          {parcels.map((p) => (
-            <tr
-              key={p.tradeId}
-              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
-            >
-              <td className="px-4 py-3 font-mono">{p.tradeId}</td>
-              <td className="px-4 py-3 font-mono font-medium">{p.code}</td>
-              <td className="px-4 py-3">{formatDate(p.date)}</td>
-              <td className="px-4 py-3 text-right font-mono">
-                {p.totalUnits.toLocaleString()}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {p.unitsRemaining.toLocaleString()}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(p.costBasePerUnit)}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(p.costBasePerUnit * p.unitsRemaining)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function TradesTable({ trades }: { trades: Trade[] }) {
-  return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-neutral-900 text-neutral-400 text-left">
-            <th className="px-4 py-3 font-medium">ID</th>
-            <th className="px-4 py-3 font-medium">Match ID</th>
-            <th className="px-4 py-3 font-medium">Date</th>
-            <th className="px-4 py-3 font-medium">Action</th>
-            <th className="px-4 py-3 font-medium">Code</th>
-            <th className="px-4 py-3 font-medium text-right">Units</th>
-            <th className="px-4 py-3 font-medium text-right">Price</th>
-            <th className="px-4 py-3 font-medium text-right">Brokerage</th>
-            <th className="px-4 py-3 font-medium text-right">Total</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-800">
-          {trades.map((t) => (
-            <tr
-              key={t.tradeId}
-              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
-            >
-              <td className="px-4 py-3 font-mono">{t.tradeId}</td>
-              <td className="px-4 py-3 font-mono text-neutral-500">
-                {t.matchId || "\u2014"}
-              </td>
-              <td className="px-4 py-3">{formatDate(t.date)}</td>
-              <td className="px-4 py-3">
-                <span
-                  className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                    t.action === "Buy"
-                      ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                      : "bg-orange-500/10 text-orange-400 border border-orange-500/20"
-                  }`}
-                >
-                  {t.action}
-                </span>
-              </td>
-              <td className="px-4 py-3 font-mono font-medium">{t.code}</td>
-              <td className="px-4 py-3 text-right font-mono">
-                {t.units.toLocaleString()}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(t.price)}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(t.brokerage)}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(t.total)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
