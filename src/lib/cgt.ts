@@ -816,22 +816,36 @@ export function getFinancialYearRange(fy: number): {
   };
 }
 
-export function exportCsvReport(
+export function exportCgtReport(
   matches: Match[],
   unmatchedSells: Trade[],
   summary: CgtSummary,
   selectedFy: number | null,
 ): string {
-  const header =
-    "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,Status";
-  const rows: string[] = [];
+  const lines: string[] = [];
 
+  lines.push("=== CGT REPORT SUMMARY ===");
+  lines.push(`Total Proceeds,${summary.totalProceeds.toFixed(2)}`);
+  lines.push(`Total Cost Base,${summary.totalCostBase.toFixed(2)}`);
+  lines.push(`Capital Gains,${summary.totalCapitalGain.toFixed(2)}`);
+  lines.push(`Capital Losses,${summary.totalCapitalLosses.toFixed(2)}`);
+  lines.push(`Net Capital Gain,${summary.netCapitalGain.toFixed(2)}`);
+  lines.push(`CGT Discount Amount Saved,${summary.totalDiscountAmount.toFixed(2)}`);
+  lines.push(`Loss Carry-Forward,${summary.lossCarryForward.toFixed(2)}`);
+  lines.push("");
+
+  lines.push("=== MATCHED TRADES ===");
+  const matchHeader =
+    "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,FY,Is Loss,Loss Offset Applied,Net Gain After Offset,Status";
+  lines.push(matchHeader);
   for (const m of matches) {
+    const fy = getFinancialYear(m.sellDate);
     const heldDays = Math.round(
       (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
         86400000,
     );
-    rows.push(
+    const lossOffset = m.isLoss ? m.capitalGain.toFixed(2) : "0.00";
+    lines.push(
       [
         m.sellTradeId,
         m.buyTradeId,
@@ -845,33 +859,100 @@ export function exportCsvReport(
         m.capitalGain.toFixed(2),
         m.cgtDiscountEligible ? "Yes" : "No",
         m.discountedGain.toFixed(2),
+        getFinancialYearLabel(fy),
+        m.isLoss ? "Yes" : "No",
+        lossOffset,
+        m.capitalGain.toFixed(2),
         "Matched",
       ].join(","),
     );
   }
+  lines.push("");
 
+  lines.push("=== UNMATCHED SELLS ===");
+  const unmatchedHeader =
+    "Trade ID,Code,Units,Date,Proceeds,Status";
+  lines.push(unmatchedHeader);
   for (const s of unmatchedSells) {
     const proceeds = s.price * s.units - s.brokerage;
-    rows.push(
+    lines.push(
       [
         s.tradeId,
-        "",
         s.code,
         s.units,
-        "",
         s.date,
-        "",
         proceeds.toFixed(2),
-        "",
-        "",
-        "",
-        "",
         "Unmatched",
       ].join(","),
     );
   }
+  lines.push("");
 
-  return [header, ...rows].join("\n");
+  lines.push("=== PER-ASSET SUMMARY ===");
+  const assetHeader =
+    "Asset Code,FY,Total Gain/Loss,Discount Eligible Count,Net Gain";
+  lines.push(assetHeader);
+  const assetMap = new Map<
+    string,
+    { gain: number; discountEligibleCount: number; netGain: number }
+  >();
+  for (const m of matches) {
+    const fy = getFinancialYear(m.sellDate);
+    const key = `${m.code}|${fy}`;
+    const existing = assetMap.get(key) || {
+      gain: 0,
+      discountEligibleCount: 0,
+      netGain: 0,
+    };
+    existing.gain += m.capitalGain;
+    existing.netGain += m.capitalGain;
+    if (m.cgtDiscountEligible) {
+      existing.discountEligibleCount += 1;
+    }
+    assetMap.set(key, existing);
+  }
+  const sortedAssets = Array.from(assetMap.entries()).sort((a, b) => {
+    const [codeA, fyA] = a[0].split("|");
+    const [codeB, fyB] = b[0].split("|");
+    if (codeA !== codeB) return codeA.localeCompare(codeB);
+    return Number(fyA) - Number(fyB);
+  });
+  for (const [key, data] of sortedAssets) {
+    const [code, fy] = key.split("|");
+    lines.push(
+      [
+        code,
+        getFinancialYearLabel(Number(fy)),
+        data.gain.toFixed(2),
+        data.discountEligibleCount,
+        data.netGain.toFixed(2),
+      ].join(","),
+    );
+  }
+  lines.push("");
+
+  lines.push("=== PER-FY SUMMARY ===");
+  const fyHeader =
+    "FY,Total Gains,Total Losses,Net Gain,Carry-Forward";
+  lines.push(fyHeader);
+  const fyBreakdown = calculateDetailedFyBreakdown(matches);
+  const sortedFys = Object.keys(fyBreakdown)
+    .map(Number)
+    .sort((a, b) => a - b);
+  for (const fy of sortedFys) {
+    const data = fyBreakdown[fy];
+    lines.push(
+      [
+        getFinancialYearLabel(fy),
+        data.gains.toFixed(2),
+        data.losses.toFixed(2),
+        data.net.toFixed(2),
+        data.carryForward.toFixed(2),
+      ].join(","),
+    );
+  }
+
+  return lines.join("\n");
 }
 
 export function getTradeFinancialYears(trades: Trade[]): number[] {

@@ -22,7 +22,7 @@ import {
   getFinancialYear,
   getFinancialYearLabel,
   filterTradesByFinancialYear,
-  exportCsvReport,
+  exportCgtReport,
   detectBrokerFormat,
   calculateDetailedFyBreakdown,
   calculateCgtDiscountBreakdown,
@@ -517,13 +517,15 @@ export default function CgtCalculator() {
 
   const handleExport = useCallback(() => {
     if (!matches.length && !unmatchedSells.length) return;
-    const csv = exportCsvReport(matches, unmatchedSells, summary!, selectedFy);
+    const csv = exportCgtReport(matches, unmatchedSells, summary!, selectedFy);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const fyLabel = selectedFy ? `_FY${selectedFy}` : "_all";
+    const fyLabel = selectedFy
+      ? getFinancialYearLabel(selectedFy).replace("/", "_")
+      : "all";
     a.href = url;
-    a.download = `cgt_report${fyLabel}.csv`;
+    a.download = `cgt_report_FY${fyLabel}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }, [matches, unmatchedSells, summary, selectedFy]);
