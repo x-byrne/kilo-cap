@@ -23,7 +23,9 @@ import {
   getFinancialYearLabel,
   filterTradesByFinancialYear,
   exportCsvReport,
+  detectBrokerFormat,
 } from "@/lib/cgt";
+import type { BrokerFormat } from "@/lib/types";
 import { SummaryCard } from "@/components/SummaryCard";
 import { MatchResultsTable } from "@/components/MatchResultsTable";
 import { ParcelsTable } from "@/components/ParcelsTable";
@@ -381,6 +383,11 @@ export default function CgtCalculator() {
   );
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [financialYears, setFinancialYears] = useState<number[]>([]);
+  const [brokerFormat, setBrokerFormat] = useState<{
+    format: BrokerFormat;
+    hint: string;
+  } | null>(null);
+  const [showFormatHelp, setShowFormatHelp] = useState(false);
 
   const applyResults = useCallback(
     (
@@ -402,6 +409,7 @@ export default function CgtCalculator() {
 
   const handleParse = useCallback(() => {
     setError("");
+    setBrokerFormat(null);
     try {
       const parsed = parseCsv(csvText);
       if (parsed.length === 0) {
@@ -409,6 +417,8 @@ export default function CgtCalculator() {
         return;
       }
       setTrades(parsed);
+      const formatResult = detectBrokerFormat(csvText);
+      setBrokerFormat(formatResult);
       const years = getTradeFinancialYears(parsed);
       setFinancialYears(years);
       const fy = years.length > 0 ? years[0] : null;
@@ -420,6 +430,19 @@ export default function CgtCalculator() {
       setError(e instanceof Error ? e.message : "Failed to parse CSV");
     }
   }, [csvText, strategy, lockedMatchKeys, applyResults]);
+
+  const handleCsvChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setCsvText(e.target.value);
+      if (e.target.value.trim().length > 10) {
+        const result = detectBrokerFormat(e.target.value);
+        setBrokerFormat(result);
+      } else {
+        setBrokerFormat(null);
+      }
+    },
+    [],
+  );
 
   const handleStrategyChange = useCallback(
     (newStrategy: MatchStrategy) => {
@@ -556,7 +579,7 @@ export default function CgtCalculator() {
 
           <textarea
             value={csvText}
-            onChange={(e) => setCsvText(e.target.value)}
+            onChange={handleCsvChange}
             placeholder="Paste CSV data here...
 
 Expected columns: trade_id, match_id, date, action, code, units, price, brokerage, total
@@ -566,6 +589,67 @@ trade_id,match_id,date,action,code,units,price,brokerage,total
 T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
             className="w-full h-40 bg-neutral-900 border border-neutral-700 rounded-lg p-4 font-mono text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
           />
+
+          {brokerFormat && (
+            <div
+              className={`mt-3 p-3 rounded-lg border text-sm ${
+                brokerFormat.format === "generic"
+                  ? "bg-blue-500/10 border-blue-500/30 text-blue-300"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-300"
+              }`}
+            >
+              {brokerFormat.hint}
+            </div>
+          )}
+
+          <div className="mt-3 flex items-center gap-4">
+            <button
+              onClick={() => setShowFormatHelp((prev) => !prev)}
+              className="text-sm px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+            >
+              {showFormatHelp ? "Hide Format Help" : "Format Help"}
+            </button>
+          </div>
+
+          {showFormatHelp && (
+            <div className="mt-3 p-4 bg-neutral-900 border border-neutral-700 rounded-lg text-sm text-neutral-300">
+              <h3 className="font-semibold text-neutral-200 mb-2">
+                Supported Australian Broker Formats
+              </h3>
+              <div className="space-y-3">
+                <div>
+                  <span className="text-amber-400 font-medium">CommSec</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Reference,Details,Debit,Credit,Balance,Quantity,Price,Brokerage,Total
+2021-01-20,REF001,Buy LRSOC,,5288.06,5288.06,135175,0.03905,9.5,5288.06
+2021-02-15,REF002,Sell LRSOC,11657.14,,,194444,0.06,9.5,11657.14</pre>
+                </div>
+                <div>
+                  <span className="text-amber-400 font-medium">SelfWealth</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Activity,Code,Quantity,Price,Amount,Brokerage
+2021-01-20,Buy,LRSOC,135175,0.03905,5288.06,9.5
+2021-02-15,Sell,LRSOC,194444,0.06,11657.14,9.5</pre>
+                </div>
+                <div>
+                  <span className="text-amber-400 font-medium">Stake</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Type,Code,Quantity,Price,Fees,Amount
+2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
+2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
+                </div>
+                <div>
+                  <span className="text-amber-400 font-medium">TradeZero</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Order ID,Type,Symbol,Quantity,Price,Commission,Net Amount
+2021-01-20,ORD001,Buy,LRSOC,135175,0.03905,9.5,5288.06
+2021-02-15,ORD002,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
+                </div>
+                <div>
+                  <span className="text-blue-400 font-medium">Generic / Standard</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">trade_id,match_id,date,action,code,units,price,brokerage,total
+T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
+T003,M003,2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="mt-3 flex items-center gap-4">
             <button

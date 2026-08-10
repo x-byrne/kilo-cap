@@ -60,3 +60,5 @@ export interface MatchedTrade extends Trade {
   matchedUnits?: number;
   matchedWith?: string; // trade ID of the matched trade
 }
+
+export type BrokerFormat = "commsec" | "selfwealth" | "stake" | "tradezero" | "generic";

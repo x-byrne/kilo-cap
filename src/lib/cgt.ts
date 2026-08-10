@@ -1,5 +1,6 @@
 import type {
   Action,
+  BrokerFormat,
   CgtSummary,
   Match,
   MatchStrategy,
@@ -9,6 +10,22 @@ import type {
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const CGT_DISCOUNT_DAYS = 365;
+
+const YYYY_MM_DD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function validateDate(dateStr: string | undefined, row: number): string {
+  if (!dateStr) {
+    return `Row ${row}: date is required`;
+  }
+  if (!YYYY_MM_DD_RE.test(dateStr)) {
+    return `Row ${row}: date must be in YYYY-MM-DD format, got "${dateStr}"`;
+  }
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) {
+    return `Row ${row}: date is invalid, got "${dateStr}"`;
+  }
+  return "";
+}
 
 export function parseCsv(csv: string): Trade[] {
   const lines = csv.trim().split("\n");
@@ -33,8 +50,16 @@ export function parseCsv(csv: string): Trade[] {
     );
   }
 
+  const hasTotalColumn = totalIdx !== -1;
+  if (!hasTotalColumn) {
+    console.warn(
+      "CSV is missing the 'total' column. It will be calculated automatically from units, price, and brokerage.",
+    );
+  }
+
   const seenTradeIds = new Set<string>();
   const trades: Trade[] = [];
+  const warnings: string[] = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -50,24 +75,39 @@ export function parseCsv(csv: string): Trade[] {
     }
     const action = rawAction as Action;
 
+    const dateErr = validateDate(values[dateIdx]?.trim(), i + 1);
+    if (dateErr) {
+      throw new Error(dateErr);
+    }
+
     const unitsRaw = values[unitsIdx]?.trim();
     const priceRaw = values[priceIdx]?.trim();
     const units = parseFloat(unitsRaw || "0");
     const price = parseFloat(priceRaw || "0");
 
-    if (units < 0) {
+    if (units <= 0 || Number.isNaN(units)) {
       throw new Error(
-        `Row ${i + 1}: units must be a non-negative number, got "${unitsRaw}"`,
+        `Row ${i + 1}: units must be a positive number, got "${unitsRaw}"`,
       );
     }
-    if (price < 0) {
+    if (price <= 0 || Number.isNaN(price)) {
       throw new Error(
-        `Row ${i + 1}: price must be a non-negative number, got "${priceRaw}"`,
+        `Row ${i + 1}: price must be a positive number, got "${priceRaw}"`,
       );
     }
 
-    const brokerage = parseFloat(values[brokerageIdx] || "0");
-    const total = parseFloat(values[totalIdx] || "0");
+    const brokerageRaw = values[brokerageIdx]?.trim();
+    const brokerage = parseFloat(brokerageRaw || "0");
+
+    if (action === "Sell" && (Number.isNaN(brokerage) || brokerage === 0)) {
+      warnings.push(
+        `Row ${i + 1}: sell trade has no brokerage — brokerage reduces sale proceeds and affects capital gains`,
+      );
+    }
+
+    const total = hasTotalColumn
+      ? parseFloat(values[totalIdx] || "0")
+      : units * price + (action === "Buy" ? brokerage : -brokerage);
 
     const tradeId = values[tradeIdIdx]?.trim() || `T${i}`;
     if (seenTradeIds.has(tradeId)) {
@@ -80,7 +120,7 @@ export function parseCsv(csv: string): Trade[] {
     trades.push({
       tradeId,
       matchId: values[matchIdIdx]?.trim() || "",
-      date: values[dateIdx]?.trim(),
+      date: values[dateIdx]?.trim()!,
       action,
       code: values[codeIdx]?.trim() || "",
       units,
@@ -88,6 +128,10 @@ export function parseCsv(csv: string): Trade[] {
       brokerage,
       total: total || units * price + (action === "Buy" ? brokerage : -brokerage),
     });
+  }
+
+  for (const w of warnings) {
+    console.warn(w);
   }
 
   return trades;
@@ -111,6 +155,73 @@ function parseCsvLine(line: string): string[] {
   }
   result.push(current.trim());
   return result;
+}
+
+export function detectBrokerFormat(csvText: string): {
+  format: BrokerFormat;
+  hint: string;
+} {
+  const lines = csvText.trim().split("\n");
+  if (lines.length === 0) {
+    return {
+      format: "generic",
+      hint: "Generic format — please ensure columns match: trade_id, match_id, date, action, code, units, price, brokerage, total",
+    };
+  }
+
+  const headerLine = lines[0].toLowerCase();
+  const headers = headerLine.split(",").map((h) => h.trim());
+
+  const hasCol = (name: string) => headers.includes(name);
+
+  if (hasCol("reference") && (hasCol("debit") || hasCol("credit"))) {
+    return {
+      format: "commsec",
+      hint: "Detected: CommSec format — map Reference → trade_id, Date → date, Debit/Credit → action+price, Code → code, Quantity → units, Brokerage → brokerage, Total → total",
+    };
+  }
+
+  if (hasCol("activity")) {
+    return {
+      format: "selfwealth",
+      hint: "Detected: SelfWealth format — map Date → date, Activity → action, Code → code, Quantity → units, Price → price, Amount → total, Brokerage → brokerage",
+    };
+  }
+
+  if (hasCol("type") && !hasCol("action")) {
+    return {
+      format: "stake",
+      hint: "Detected: Stake format — map Date → date, Type → action, Code → code, Quantity → units, Price → price, Fees → brokerage, Amount → total",
+    };
+  }
+
+  if (hasCol("order id")) {
+    return {
+      format: "tradezero",
+      hint: "Detected: TradeZero format — map Date → date, Order ID → trade_id, Type → action, Symbol → code, Quantity → units, Price → price, Commission → brokerage, Net Amount → total",
+    };
+  }
+
+  if (
+    hasCol("trade_id") &&
+    hasCol("date") &&
+    hasCol("action") &&
+    hasCol("code") &&
+    hasCol("units") &&
+    hasCol("price") &&
+    hasCol("brokerage") &&
+    hasCol("total")
+  ) {
+    return {
+      format: "generic",
+      hint: "Generic format — columns matched successfully. Ready to calculate.",
+    };
+  }
+
+  return {
+    format: "generic",
+    hint: "Generic format — please ensure columns match: trade_id, match_id, date, action, code, units, price, brokerage, total",
+  };
 }
 
 export function tradesToParcels(trades: Trade[]): Parcel[] {
