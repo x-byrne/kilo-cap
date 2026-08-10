@@ -26,6 +26,7 @@ import {
   detectBrokerFormat,
   calculateDetailedFyBreakdown,
   calculateCgtDiscountBreakdown,
+  calculateAssetBreakdown,
 } from "@/lib/cgt";
 import type { BrokerFormat } from "@/lib/types";
 import { SummaryCard } from "@/components/SummaryCard";
@@ -380,9 +381,9 @@ export default function CgtCalculator() {
   const [remainingParcels, setRemainingParcels] = useState<Parcel[]>([]);
   const [summary, setSummary] = useState<CgtSummary | null>(null);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"matches" | "parcels" | "trades">(
-    "matches",
-  );
+  const [activeTab, setActiveTab] = useState<
+    "matches" | "byasset" | "parcels" | "trades"
+  >("matches");
   const [lockedMatchKeys, setLockedMatchKeys] = useState<Set<string>>(
     new Set(),
   );
@@ -393,6 +394,9 @@ export default function CgtCalculator() {
     hint: string;
   } | null>(null);
   const [showFormatHelp, setShowFormatHelp] = useState(false);
+  const [assetSort, setAssetSort] = useState<
+    "gain-desc" | "loss-desc" | "alpha-asc"
+  >("gain-desc");
 
   const applyResults = useCallback(
     (
@@ -1018,6 +1022,7 @@ T003,M003,2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
               {(
                 [
                   ["matches", "Matched Trades"],
+                  ["byasset", "By Asset"],
                   ["parcels", "Remaining Parcels"],
                   ["trades", "All Trades"],
                 ] as const
@@ -1046,6 +1051,161 @@ T003,M003,2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
                 onUnlockAll={handleUnlockAll}
               />
             )}
+            {activeTab === "byasset" && matches.length > 0 && (() => {
+              const filteredMatches = selectedFy
+                ? matches.filter(
+                    (m) => getFinancialYear(m.sellDate) === selectedFy,
+                  )
+                : matches;
+              const assetBreakdown = calculateAssetBreakdown(filteredMatches);
+              const sortedAssets = Array.from(assetBreakdown.values());
+              switch (assetSort) {
+                case "gain-desc":
+                  sortedAssets.sort((a, b) => b.netCapitalGain - a.netCapitalGain);
+                  break;
+                case "loss-desc":
+                  sortedAssets.sort((a, b) => a.netCapitalGain - b.netCapitalGain);
+                  break;
+                case "alpha-asc":
+                  sortedAssets.sort((a, b) => a.code.localeCompare(b.code));
+                  break;
+              }
+              const totalNetGain = sortedAssets.reduce(
+                (s, a) => s + a.netCapitalGain,
+                0,
+              );
+              return (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <label
+                      htmlFor="asset-sort"
+                      className="text-sm text-neutral-400"
+                    >
+                      Sort by
+                    </label>
+                    <select
+                      id="asset-sort"
+                      value={assetSort}
+                      onChange={(e) =>
+                        setAssetSort(
+                          e.target.value as "gain-desc" | "loss-desc" | "alpha-asc",
+                        )
+                      }
+                      className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="gain-desc">Highest Gain First</option>
+                      <option value="loss-desc">Highest Loss First</option>
+                      <option value="alpha-asc">Alphabetical</option>
+                    </select>
+                  </div>
+                  {sortedAssets.length > 0 ? (
+                    <div className="overflow-x-auto rounded-lg border border-neutral-800">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-neutral-900 text-neutral-400 text-left">
+                            <th className="px-4 py-3 font-medium">Asset</th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Matches
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Total Proceeds
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Total Cost Base
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Capital Gain/Loss
+                            </th>
+                            <th className="px-4 py-3 font-medium text-center">
+                              CGT Discount Eligible
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Taxable Gain
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-800">
+                          {sortedAssets.map((asset) => (
+                            <tr
+                              key={asset.code}
+                              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
+                            >
+                              <td className="px-4 py-3 font-mono font-medium">
+                                {asset.code}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {asset.totalMatches}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {formatCurrency(asset.totalProceeds)}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {formatCurrency(asset.totalCostBase)}
+                              </td>
+                              <td
+                                className={`px-4 py-3 text-right font-mono ${
+                                  asset.netCapitalGain >= 0
+                                    ? "text-green-400"
+                                    : "text-red-400"
+                                }`}
+                              >
+                                {formatCurrency(asset.netCapitalGain)}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {asset.cgtDiscountEligibleCount > 0 ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+                                    {asset.cgtDiscountEligibleCount}
+                                  </span>
+                                ) : (
+                                  <span className="text-neutral-500">0</span>
+                                )}
+                              </td>
+                              <td
+                                className={`px-4 py-3 text-right font-mono ${
+                                  asset.netCapitalGain >= 0
+                                    ? "text-green-400"
+                                    : "text-red-400"
+                                }`}
+                              >
+                                {formatCurrency(
+                                  asset.netCapitalGain >= 0
+                                    ? asset.netCapitalGain * 0.5
+                                    : asset.netCapitalGain,
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="bg-neutral-900 font-medium">
+                            <td
+                              className="px-4 py-3"
+                              colSpan={4}
+                            >
+                              Total Net Capital Gain
+                            </td>
+                            <td
+                              className={`px-4 py-3 text-right font-mono ${
+                                totalNetGain >= 0
+                                  ? "text-green-400"
+                                  : "text-red-400"
+                              }`}
+                            >
+                              {formatCurrency(totalNetGain)}
+                            </td>
+                            <td colSpan={2} />
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-neutral-500 py-8 text-center border border-neutral-800 rounded-lg">
+                      No asset data available for the selected filters.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             {activeTab === "parcels" && (
               <ParcelsTable parcels={remainingParcels} />
             )}

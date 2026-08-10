@@ -517,6 +517,53 @@ export function calculateCgtSummary(
   };
 }
 
+export interface AssetSummary {
+  code: string;
+  totalMatches: number;
+  totalProceeds: number;
+  totalCostBase: number;
+  grossCapitalGain: number;
+  totalCapitalLosses: number;
+  cgtDiscountEligibleCount: number;
+  netCapitalGain: number;
+}
+
+export function calculateAssetBreakdown(
+  matches: Match[],
+): Map<string, AssetSummary> {
+  const breakdown = new Map<string, AssetSummary>();
+
+  for (const m of matches) {
+    const existing = breakdown.get(m.code) || {
+      code: m.code,
+      totalMatches: 0,
+      totalProceeds: 0,
+      totalCostBase: 0,
+      grossCapitalGain: 0,
+      totalCapitalLosses: 0,
+      cgtDiscountEligibleCount: 0,
+      netCapitalGain: 0,
+    };
+
+    existing.totalMatches += 1;
+    existing.totalProceeds += m.sellProceeds;
+    existing.totalCostBase += m.buyCostBase;
+    if (m.capitalGain >= 0) {
+      existing.grossCapitalGain += m.capitalGain;
+    } else {
+      existing.totalCapitalLosses += m.capitalGain;
+    }
+    if (m.cgtDiscountEligible) {
+      existing.cgtDiscountEligibleCount += 1;
+    }
+    existing.netCapitalGain += m.capitalGain;
+
+    breakdown.set(m.code, existing);
+  }
+
+  return breakdown;
+}
+
 export function calculateFyBreakdown(
   matches: Match[],
 ): Record<number, { gains: number; losses: number; net: number }> {
