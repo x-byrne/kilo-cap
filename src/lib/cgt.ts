@@ -33,6 +33,7 @@ export function parseCsv(csv: string): Trade[] {
     );
   }
 
+  const seenTradeIds = new Set<string>();
   const trades: Trade[] = [];
 
   for (let i = 1; i < lines.length; i++) {
@@ -40,16 +41,44 @@ export function parseCsv(csv: string): Trade[] {
     if (!line) continue;
 
     const values = parseCsvLine(line);
-    const action = values[actionIdx]?.trim() as Action;
-    if (action !== "Buy" && action !== "Sell") continue;
+    const rawAction = values[actionIdx]?.trim();
+    if (rawAction !== "Buy" && rawAction !== "Sell") {
+      console.warn(
+        `Row ${i + 1}: unrecognised action "${rawAction}" — skipping`,
+      );
+      continue;
+    }
+    const action = rawAction as Action;
 
-    const units = parseFloat(values[unitsIdx] || "0");
-    const price = parseFloat(values[priceIdx] || "0");
+    const unitsRaw = values[unitsIdx]?.trim();
+    const priceRaw = values[priceIdx]?.trim();
+    const units = parseFloat(unitsRaw || "0");
+    const price = parseFloat(priceRaw || "0");
+
+    if (units < 0) {
+      throw new Error(
+        `Row ${i + 1}: units must be a non-negative number, got "${unitsRaw}"`,
+      );
+    }
+    if (price < 0) {
+      throw new Error(
+        `Row ${i + 1}: price must be a non-negative number, got "${priceRaw}"`,
+      );
+    }
+
     const brokerage = parseFloat(values[brokerageIdx] || "0");
     const total = parseFloat(values[totalIdx] || "0");
 
+    const tradeId = values[tradeIdIdx]?.trim() || `T${i}`;
+    if (seenTradeIds.has(tradeId)) {
+      throw new Error(
+        `Row ${i + 1}: duplicate trade_id "${tradeId}" found in CSV`,
+      );
+    }
+    seenTradeIds.add(tradeId);
+
     trades.push({
-      tradeId: values[tradeIdIdx]?.trim() || `T${i}`,
+      tradeId,
       matchId: values[matchIdIdx]?.trim() || "",
       date: values[dateIdx]?.trim(),
       action,
@@ -309,19 +338,16 @@ function matchAutomatic(
       if (remainingSellUnits <= 0) break;
 
       const matchedUnits = Math.min(remainingSellUnits, parcel.unitsRemaining);
-      parcel.unitsRemaining -= matchedUnits;
+      const updatedParcel = { ...parcel, unitsRemaining: parcel.unitsRemaining - matchedUnits };
       remainingSellUnits -= matchedUnits;
 
-      // Proportional brokerage for the sell
       const sellBrokeragePortion =
         (matchedUnits / sell.units) * sell.brokerage;
       totalSellBrokerageAllocated += sellBrokeragePortion;
 
-      // Proceeds = price * units - proportional brokerage
       const netProceeds = sell.price * matchedUnits - sellBrokeragePortion;
-      // Cost base = buy price * units + proportional brokerage
       const buyCostBase =
-        (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
+        (updatedParcel.totalCostBase / updatedParcel.totalUnits) * matchedUnits;
 
       const capitalGain = netProceeds - buyCostBase;
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
@@ -356,7 +382,11 @@ function matchAutomatic(
   return { matches, unmatchedSells, remainingParcels };
 }
 
-export function calculateCgtSummary(matches: Match[]): CgtSummary {
+export function calculateCgtSummary(
+  matches: Match[],
+  unmatchedSells: Trade[],
+  remainingParcels: Parcel[],
+): CgtSummary {
   let totalProceeds = 0;
   let totalCostBase = 0;
   let totalCapitalGain = 0;
@@ -378,8 +408,8 @@ export function calculateCgtSummary(matches: Match[]): CgtSummary {
     totalDiscountedGain,
     totalDiscountAmount,
     matchCount: matches.length,
-    unmatchedSells: [],
-    remainingParcels: [],
+    unmatchedSells,
+    remainingParcels,
   };
 }
 
@@ -404,7 +434,9 @@ export function formatDate(dateStr: string): string {
 export function getFinancialYear(dateStr: string): number {
   const d = new Date(dateStr);
   const y = d.getFullYear();
-  return d.getMonth() >= 6 ? y + 1 : y; // months 0-indexed, 6 = July
+  // Months are 0-indexed: 0 = January, 5 = June, 6 = July.
+  // FY starts 1 July, so if month >= 6 we're in the next calendar year's FY.
+  return d.getMonth() >= 6 ? y + 1 : y;
 }
 
 export function getFinancialYearLabel(fy: number): string {
@@ -419,6 +451,64 @@ export function getFinancialYearRange(fy: number): {
     start: `${fy - 1}-07-01`,
     end: `${fy}-06-30`,
   };
+}
+
+export function exportCsvReport(
+  matches: Match[],
+  unmatchedSells: Trade[],
+  summary: CgtSummary,
+  selectedFy: number | null,
+): string {
+  const header =
+    "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,Status";
+  const rows: string[] = [];
+
+  for (const m of matches) {
+    const heldDays = Math.round(
+      (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
+        86400000,
+    );
+    rows.push(
+      [
+        m.sellTradeId,
+        m.buyTradeId,
+        m.code,
+        m.units,
+        m.buyDate,
+        m.sellDate,
+        heldDays,
+        m.sellProceeds.toFixed(2),
+        m.buyCostBase.toFixed(2),
+        m.capitalGain.toFixed(2),
+        m.cgtDiscountEligible ? "Yes" : "No",
+        m.discountedGain.toFixed(2),
+        "Matched",
+      ].join(","),
+    );
+  }
+
+  for (const s of unmatchedSells) {
+    const proceeds = s.price * s.units - s.brokerage;
+    rows.push(
+      [
+        s.tradeId,
+        "",
+        s.code,
+        s.units,
+        "",
+        s.date,
+        "",
+        proceeds.toFixed(2),
+        "",
+        "",
+        "",
+        "",
+        "Unmatched",
+      ].join(","),
+    );
+  }
+
+  return [header, ...rows].join("\n");
 }
 
 export function getTradeFinancialYears(trades: Trade[]): number[] {
