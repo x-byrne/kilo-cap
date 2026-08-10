@@ -267,6 +267,7 @@ function matchManual(trades: Trade[]): {
           sellProceeds: netProceeds,
           buyCostBase,
           capitalGain,
+          isLoss: capitalGain < 0,
           cgtDiscountEligible: eligible,
           discountedGain,
         });
@@ -363,6 +364,7 @@ function matchAutomatic(
         sellProceeds: netProceeds,
         buyCostBase,
         capitalGain,
+        isLoss: capitalGain < 0,
         cgtDiscountEligible: eligible,
         discountedGain,
       });
@@ -387,19 +389,114 @@ export function calculateCgtSummary(
   unmatchedSells: Trade[],
   remainingParcels: Parcel[],
 ): CgtSummary {
+  const lossSummary = calculateLossOffsets(matches);
+  return {
+    totalProceeds: lossSummary.totalProceeds,
+    totalCostBase: lossSummary.totalCostBase,
+    totalCapitalGain: lossSummary.totalCapitalGain,
+    totalDiscountedGain: lossSummary.totalDiscountedGain,
+    totalDiscountAmount: lossSummary.totalDiscountAmount,
+    matchCount: lossSummary.matchCount,
+    unmatchedSells,
+    remainingParcels,
+    totalCapitalLosses: lossSummary.totalCapitalLosses,
+    netCapitalGain: lossSummary.netCapitalGain,
+    lossCarryForward: lossSummary.lossCarryForward,
+    fycgSummary: lossSummary.fycgSummary,
+  };
+}
+
+export function calculateFyBreakdown(
+  matches: Match[],
+): Record<number, { gains: number; losses: number; net: number }> {
+  const breakdown: Record<
+    number,
+    { gains: number; losses: number; net: number }
+  > = {};
+
+  for (const m of matches) {
+    const fy = getFinancialYear(m.sellDate);
+    if (!breakdown[fy]) {
+      breakdown[fy] = { gains: 0, losses: 0, net: 0 };
+    }
+    if (m.capitalGain < 0) {
+      breakdown[fy].losses += m.capitalGain;
+    } else {
+      breakdown[fy].gains += m.capitalGain;
+    }
+    breakdown[fy].net += m.capitalGain;
+  }
+
+  return breakdown;
+}
+
+export function calculateLossOffsets(matches: Match[]): CgtSummary {
   let totalProceeds = 0;
   let totalCostBase = 0;
   let totalCapitalGain = 0;
   let totalDiscountedGain = 0;
+  let totalCapitalLosses = 0;
 
   for (const m of matches) {
     totalProceeds += m.sellProceeds;
     totalCostBase += m.buyCostBase;
     totalCapitalGain += m.capitalGain;
     totalDiscountedGain += m.discountedGain;
+    if (m.capitalGain < 0) {
+      totalCapitalLosses += m.capitalGain;
+    }
   }
 
   const totalDiscountAmount = totalCapitalGain - totalDiscountedGain;
+
+  const matchesByFy = new Map<number, Match[]>();
+  for (const m of matches) {
+    const fy = getFinancialYear(m.sellDate);
+    const group = matchesByFy.get(fy) || [];
+    group.push(m);
+    matchesByFy.set(fy, group);
+  }
+
+  const sortedFys = Array.from(matchesByFy.keys()).sort((a, b) => a - b);
+  let runningCarryForward = 0;
+  const fycgSummary: Record<
+    number,
+    { gains: number; losses: number; net: number; carryForward: number }
+  > = {};
+
+  for (const fy of sortedFys) {
+    const fyMatches = matchesByFy.get(fy)!;
+    let fyGains = 0;
+    let fyLosses = 0;
+
+    for (const m of fyMatches) {
+      if (m.capitalGain < 0) {
+        fyLosses += m.capitalGain;
+      } else {
+        fyGains += m.capitalGain;
+      }
+    }
+
+    const netBeforeCarry = fyGains + fyLosses;
+    const adjustedNet = netBeforeCarry + runningCarryForward;
+    let fyCarryForward = 0;
+
+    if (adjustedNet < 0) {
+      fyCarryForward = adjustedNet;
+    }
+
+    fycgSummary[fy] = {
+      gains: fyGains,
+      losses: fyLosses,
+      net: adjustedNet,
+      carryForward: fyCarryForward,
+    };
+
+    runningCarryForward = fyCarryForward;
+  }
+
+  const netCapitalGain = totalCapitalGain + totalCapitalLosses;
+  const lossCarryForward = runningCarryForward;
 
   return {
     totalProceeds,
@@ -408,8 +505,12 @@ export function calculateCgtSummary(
     totalDiscountedGain,
     totalDiscountAmount,
     matchCount: matches.length,
-    unmatchedSells,
-    remainingParcels,
+    unmatchedSells: [],
+    remainingParcels: [],
+    totalCapitalLosses,
+    netCapitalGain,
+    lossCarryForward,
+    fycgSummary,
   };
 }
 
