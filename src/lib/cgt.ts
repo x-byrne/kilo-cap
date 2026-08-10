@@ -463,7 +463,14 @@ export function exportCsvReport(
     "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,Status";
   const rows: string[] = [];
 
-  for (const m of matches) {
+  const filteredMatches = selectedFy
+    ? matches.filter((m) => getFinancialYear(m.sellDate) === selectedFy)
+    : matches;
+  const filteredUnmatched = selectedFy
+    ? unmatchedSells.filter((s) => getFinancialYear(s.date) === selectedFy)
+    : unmatchedSells;
+
+  for (const m of filteredMatches) {
     const heldDays = Math.round(
       (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
         86400000,
@@ -487,7 +494,7 @@ export function exportCsvReport(
     );
   }
 
-  for (const s of unmatchedSells) {
+  for (const s of filteredUnmatched) {
     const proceeds = s.price * s.units - s.brokerage;
     rows.push(
       [

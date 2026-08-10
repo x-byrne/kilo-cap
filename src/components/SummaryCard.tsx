@@ -1,4 +1,3 @@
-import type { CgtSummary } from "@/lib/types";
 import { formatCurrency } from "@/lib/cgt";
 
 export function SummaryCard({
