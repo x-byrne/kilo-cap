@@ -24,6 +24,8 @@ import {
   filterTradesByFinancialYear,
   exportCsvReport,
   detectBrokerFormat,
+  calculateDetailedFyBreakdown,
+  calculateCgtDiscountBreakdown,
 } from "@/lib/cgt";
 import type { BrokerFormat } from "@/lib/types";
 import { SummaryCard } from "@/components/SummaryCard";
@@ -254,6 +256,7 @@ function matchManualWithLocked(
           sellProceeds: netProceeds,
           buyCostBase,
           capitalGain,
+          isLoss: capitalGain < 0,
           cgtDiscountEligible: eligible,
           discountedGain,
         });
@@ -348,6 +351,7 @@ function matchAutomaticWithAvailable(
         sellProceeds: netProceeds,
         buyCostBase,
         capitalGain,
+        isLoss: capitalGain < 0,
         cgtDiscountEligible: eligible,
         discountedGain,
       });
@@ -459,7 +463,7 @@ export default function CgtCalculator() {
   const handleToggleLock = useCallback(
     (m: Match) => {
       const key = matchKey(m);
-      const next = new Set(lockedMatchKeys);
+      const next = new Set<string>(lockedMatchKeys);
       if (next.has(key)) {
         next.delete(key);
       } else {
@@ -794,6 +798,29 @@ T003,M003,2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
                       : ""
                 }
               />
+              <SummaryCard
+                label="Total Capital Losses"
+                value={formatCurrency(summary.totalCapitalLosses)}
+                highlight="text-red-400"
+              />
+              <SummaryCard
+                label="Net Capital Gain"
+                value={formatCurrency(summary.netCapitalGain)}
+                highlight={
+                  summary.netCapitalGain > 0
+                    ? "text-green-400"
+                    : summary.netCapitalGain < 0
+                      ? "text-red-400"
+                      : ""
+                }
+              />
+              {summary.lossCarryForward < 0 && (
+                <SummaryCard
+                  label="Loss Carry-Forward"
+                  value={formatCurrency(summary.lossCarryForward)}
+                  highlight="text-red-400"
+                />
+              )}
             </div>
             {summary.totalDiscountAmount > 0 && (
               <div className="mt-3 text-sm text-neutral-400">
@@ -806,6 +833,183 @@ T003,M003,2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
             )}
           </section>
         )}
+
+        {/* Net Capital Gain Summary */}
+        {summary && matches.length > 0 && (() => {
+          const discountBreakdown = calculateCgtDiscountBreakdown(matches);
+          return (
+            <section className="mb-8">
+              <h2 className="text-lg font-semibold mb-4">Net Capital Gain Summary</h2>
+              <div className="bg-neutral-900 border border-neutral-800 rounded-lg overflow-hidden divide-y divide-neutral-800">
+                <div className="flex justify-between px-4 py-3">
+                  <span className="text-sm text-neutral-400">
+                    Capital gains eligible for 50% CGT discount
+                  </span>
+                  <span className="text-sm font-mono text-green-400">
+                    {formatCurrency(discountBreakdown.eligibleGains)}
+                  </span>
+                </div>
+                <div className="flex justify-between px-4 py-3">
+                  <span className="text-sm text-neutral-400">
+                    Capital gains not eligible for CGT discount
+                  </span>
+                  <span className="text-sm font-mono text-blue-400">
+                    {formatCurrency(discountBreakdown.ineligibleGains)}
+                  </span>
+                </div>
+                <div className="flex justify-between px-4 py-3">
+                  <span className="text-sm text-neutral-400">
+                    Capital losses offsetting gains
+                  </span>
+                  <span className="text-sm font-mono text-red-400">
+                    ({formatCurrency(Math.abs(discountBreakdown.totalLosses))})
+                  </span>
+                </div>
+                <div className="flex justify-between px-4 py-3 bg-neutral-800/30">
+                  <span className="text-sm font-medium text-neutral-200">
+                    Net result after all offsets
+                  </span>
+                  <span
+                    className={`text-sm font-mono font-medium ${
+                      discountBreakdown.netGain > 0
+                        ? "text-green-400"
+                        : discountBreakdown.netGain < 0
+                          ? "text-red-400"
+                          : "text-neutral-400"
+                    }`}
+                  >
+                    {formatCurrency(discountBreakdown.netGain)}
+                  </span>
+                </div>
+              </div>
+            </section>
+          );
+        })()}
+
+        {/* Capital Gains & Losses by Financial Year */}
+        {summary && matches.length > 0 && (() => {
+          const fyBreakdown = calculateDetailedFyBreakdown(matches);
+          const sortedFys = Object.keys(fyBreakdown)
+            .map(Number)
+            .sort((a, b) => a - b);
+          const hasCarryForward = sortedFys.some(
+            (fy) => fyBreakdown[fy].carryForward < 0,
+          );
+          return (
+            <section className="mb-8">
+              <h2 className="text-lg font-semibold mb-4">
+                Capital Gains & Losses by Financial Year
+              </h2>
+              <div className="overflow-x-auto rounded-lg border border-neutral-800">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-neutral-900 text-neutral-400 text-left">
+                      <th className="px-4 py-3 font-medium">Financial Year</th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Total Gains (before discount)
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Total Losses
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Net Capital Gain/Loss
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        CGT Discount Applied
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Loss Carry-Forward
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-800">
+                    {sortedFys.map((fy) => {
+                      const data = fyBreakdown[fy];
+                      const rowHasCarryForward = data.carryForward < 0;
+                      return (
+                        <tr
+                          key={fy}
+                          className={
+                            rowHasCarryForward
+                              ? "bg-red-500/5"
+                              : "bg-neutral-950"
+                          }
+                        >
+                          <td className="px-4 py-3 font-medium">
+                            {getFinancialYearLabel(fy)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-green-400">
+                            {formatCurrency(data.gains)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-red-400">
+                            {formatCurrency(data.losses)}
+                          </td>
+                          <td
+                            className={`px-4 py-3 text-right font-mono ${
+                              data.net > 0
+                                ? "text-green-400"
+                                : data.net < 0
+                                  ? "text-red-400"
+                                  : "text-neutral-400"
+                            }`}
+                          >
+                            {formatCurrency(data.net)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-green-400">
+                            {formatCurrency(data.discountApplied)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono">
+                            {rowHasCarryForward ? (
+                              <span className="text-red-400 font-medium flex items-center justify-end gap-1">
+                                <svg
+                                  className="w-3 h-3"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="M13 7l5 5m0 0l-5 5m5-5H6"
+                                  />
+                                </svg>
+                                {formatCurrency(data.carryForward)}
+                              </span>
+                            ) : (
+                              <span className="text-neutral-500">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {hasCarryForward && (
+                <div className="mt-3 text-sm text-neutral-400 flex items-center gap-2">
+                  <svg
+                    className="w-4 h-4 text-amber-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <span>
+                    Losses highlighted in red are being carried forward to
+                    future financial years to offset future capital gains.
+                  </span>
+                </div>
+              )}
+            </section>
+          );
+        })()}
 
         {/* Tab Navigation */}
         {trades.length > 0 && (

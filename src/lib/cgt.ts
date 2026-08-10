@@ -541,6 +541,110 @@ export function calculateFyBreakdown(
   return breakdown;
 }
 
+export function calculateDetailedFyBreakdown(
+  matches: Match[],
+): Record<
+  number,
+  {
+    gains: number;
+    losses: number;
+    net: number;
+    carryForward: number;
+    discountApplied: number;
+  }
+> {
+  const matchesByFy = new Map<number, Match[]>();
+  for (const m of matches) {
+    const fy = getFinancialYear(m.sellDate);
+    const group = matchesByFy.get(fy) || [];
+    group.push(m);
+    matchesByFy.set(fy, group);
+  }
+
+  const sortedFys = Array.from(matchesByFy.keys()).sort((a, b) => a - b);
+  let runningCarryForward = 0;
+  const result: Record<
+    number,
+    {
+      gains: number;
+      losses: number;
+      net: number;
+      carryForward: number;
+      discountApplied: number;
+    }
+  > = {};
+
+  for (const fy of sortedFys) {
+    const fyMatches = matchesByFy.get(fy)!;
+    let fyGains = 0;
+    let fyLosses = 0;
+    let fyDiscountApplied = 0;
+
+    for (const m of fyMatches) {
+      if (m.capitalGain < 0) {
+        fyLosses += m.capitalGain;
+      } else {
+        fyGains += m.capitalGain;
+        if (m.cgtDiscountEligible) {
+          fyDiscountApplied += m.capitalGain * 0.5;
+        }
+      }
+    }
+
+    const netBeforeCarry = fyGains + fyLosses;
+    const adjustedNet = netBeforeCarry + runningCarryForward;
+    let fyCarryForward = 0;
+
+    if (adjustedNet < 0) {
+      fyCarryForward = adjustedNet;
+    }
+
+    result[fy] = {
+      gains: fyGains,
+      losses: fyLosses,
+      net: adjustedNet,
+      carryForward: fyCarryForward,
+      discountApplied: fyDiscountApplied,
+    };
+
+    runningCarryForward = fyCarryForward;
+  }
+
+  return result;
+}
+
+export function calculateCgtDiscountBreakdown(matches: Match[]): {
+  eligibleGains: number;
+  ineligibleGains: number;
+  totalLosses: number;
+  discountSaved: number;
+  netGain: number;
+} {
+  let eligibleGains = 0;
+  let ineligibleGains = 0;
+  let totalLosses = 0;
+  let discountSaved = 0;
+
+  for (const m of matches) {
+    if (m.capitalGain < 0) {
+      totalLosses += m.capitalGain;
+    } else if (m.cgtDiscountEligible) {
+      eligibleGains += m.capitalGain;
+      discountSaved += m.capitalGain * 0.5;
+    } else {
+      ineligibleGains += m.capitalGain;
+    }
+  }
+
+  return {
+    eligibleGains,
+    ineligibleGains,
+    totalLosses,
+    discountSaved,
+    netGain: eligibleGains + ineligibleGains + totalLosses,
+  };
+}
+
 export function calculateLossOffsets(matches: Match[]): CgtSummary {
   let totalProceeds = 0;
   let totalCostBase = 0;

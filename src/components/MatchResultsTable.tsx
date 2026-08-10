@@ -84,7 +84,9 @@ export function MatchResultsTable({
                     className={`transition-colors ${
                       locked
                         ? "bg-amber-500/5"
-                        : "bg-neutral-950 hover:bg-neutral-900/50"
+                        : m.isLoss
+                          ? "bg-red-500/5"
+                          : "bg-neutral-950 hover:bg-neutral-900/50"
                     }`}
                   >
                     <td className="px-4 py-3">
