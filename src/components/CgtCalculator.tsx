@@ -82,6 +82,7 @@ function buildMatchFromKey(
     sellProceeds: netProceeds,
     buyCostBase,
     capitalGain,
+    isLoss: capitalGain < 0,
     cgtDiscountEligible: eligible,
     discountedGain,
   };
