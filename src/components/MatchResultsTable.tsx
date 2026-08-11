@@ -1,7 +1,7 @@
 "use client";
 
 import type { Match, Trade } from "@/lib/types";
-import { formatCurrency, formatDate, getHeldDays } from "@/lib/cgt";
+import { formatCurrency, formatDate } from "@/lib/cgt";
 import { matchKey } from "@/components/CgtCalculator";
 
 interface MatchResultsTableProps {
@@ -72,7 +72,11 @@ export default function MatchResultsTable({
               {matches.map((m, i) => {
                 const key = matchKey(m);
                 const locked = lockedMatchKeys.has(key);
-                const heldDays = getHeldDays(m.buyDate, m.sellDate);
+                const heldDays = Math.round(
+                  (new Date(m.sellDate).getTime() -
+                    new Date(m.buyDate).getTime()) /
+                    (1000 * 60 * 60 * 24),
+                );
                 return (
                   <tr
                     key={`${key}-${i}`}
