@@ -16,6 +16,7 @@ import {
   isCgtDiscountEligible,
   formatCurrency,
   formatDate,
+  getHeldDays,
   STRATEGY_LABELS,
   STRATEGY_DESCRIPTIONS,
   getTradeFinancialYears,
@@ -388,7 +389,7 @@ export default function CgtCalculator() {
       setMatches(result.matches);
       setUnmatchedSells(result.unmatchedSells);
       setRemainingParcels(result.remainingParcels);
-      setSummary(calculateCgtSummary(result.matches));
+      setSummary(calculateCgtSummary(result));
     },
     [],
   );
@@ -484,10 +485,7 @@ export default function CgtCalculator() {
     const rows: string[] = [];
 
     for (const m of matches) {
-      const heldDays = Math.round(
-        (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
-          86400000,
-      );
+      const heldDays = getHeldDays(m.buyDate, m.sellDate);
       rows.push(
         [
           m.sellTradeId,
@@ -912,11 +910,7 @@ function MatchResultsTable({
               {matches.map((m, i) => {
                 const key = matchKey(m);
                 const locked = lockedMatchKeys.has(key);
-                const heldDays = Math.round(
-                  (new Date(m.sellDate).getTime() -
-                    new Date(m.buyDate).getTime()) /
-                    (1000 * 60 * 60 * 24),
-                );
+                const heldDays = getHeldDays(m.buyDate, m.sellDate);
                 return (
                   <tr
                     key={`${key}-${i}`}

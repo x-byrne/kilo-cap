@@ -91,9 +91,9 @@ The app expects CSV data with the following columns:
 | Column       | Description                        |
 | ------------ | ---------------------------------- |
 | `action`     | `buy` or `sell`                    |
-| `ticker`     | Stock/ETF ticker symbol            |
+| `code`       | Stock/ETF ticker symbol            |
 | `date`       | Trade date (YYYY-MM-DD)            |
-| `quantity`   | Number of units                    |
+| `units`      | Number of units                    |
 | `price`      | Price per unit                     |
 | `brokerage`  | Brokerage fee                      |
 | `match_id`   | (Optional) For manual matching     |

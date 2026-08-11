@@ -60,3 +60,9 @@ export interface MatchedTrade extends Trade {
   matchedUnits?: number;
   matchedWith?: string; // trade ID of the matched trade
 }
+
+export interface MatchResult {
+  matches: Match[];
+  unmatchedSells: Trade[];
+  remainingParcels: Parcel[];
+}
