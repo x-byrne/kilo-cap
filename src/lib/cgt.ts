@@ -445,6 +445,10 @@ export function getFinancialYearRange(fy: number): {
   };
 }
 
+export function matchKey(m: Match): string {
+  return `${m.buyTradeId}-${m.sellTradeId}-${m.units}`;
+}
+
 export function getTradeFinancialYears(trades: Trade[]): number[] {
   const fySet = new Set<number>();
   for (const t of trades) {

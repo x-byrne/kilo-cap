@@ -1,8 +1,7 @@
 "use client";
 
 import type { Match, Trade } from "@/lib/types";
-import { formatCurrency, formatDate } from "@/lib/cgt";
-import { matchKey } from "@/components/CgtCalculator";
+import { formatCurrency, formatDate, matchKey } from "@/lib/cgt";
 
 interface MatchResultsTableProps {
   matches: Match[];

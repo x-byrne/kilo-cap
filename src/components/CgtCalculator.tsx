@@ -21,6 +21,7 @@ import {
   getFinancialYear,
   getFinancialYearLabel,
   filterTradesByFinancialYear,
+  matchKey,
 } from "@/lib/cgt";
 import CsvInput from "./CsvInput";
 import StrategySelector from "./StrategySelector";
@@ -46,10 +47,6 @@ const strategies: MatchStrategy[] = [
   "max-cost-base",
   "manual",
 ];
-
-export function matchKey(m: Match): string {
-  return `${m.buyTradeId}-${m.sellTradeId}-${m.units}`;
-}
 
 function buildMatchFromKey(
   key: string,
