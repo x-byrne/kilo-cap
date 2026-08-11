@@ -2,12 +2,15 @@ import type {
   Action,
   CgtSummary,
   Match,
+  MatchResult,
   MatchStrategy,
   Parcel,
   Trade,
 } from "./types";
 
-const MS_PER_DAY = 1000 * 60 * 60 * 24;
+export { MatchResult };
+
+export const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const CGT_DISCOUNT_DAYS = 365;
 
 export function parseCsv(csv: string): Trade[] {
@@ -43,15 +46,45 @@ export function parseCsv(csv: string): Trade[] {
     const action = values[actionIdx]?.trim() as Action;
     if (action !== "Buy" && action !== "Sell") continue;
 
+    const date = values[dateIdx]?.trim();
+    if (!date || isNaN(new Date(date).getTime())) {
+      throw new Error(
+        `Invalid date on line ${i + 1}: "${values[dateIdx]?.trim()}". Expected YYYY-MM-DD.`,
+      );
+    }
+
     const units = parseFloat(values[unitsIdx] || "0");
+    if (isNaN(units) || units <= 0) {
+      throw new Error(
+        `Invalid units on line ${i + 1}: "${values[unitsIdx]?.trim()}". Must be a positive number.`,
+      );
+    }
+
     const price = parseFloat(values[priceIdx] || "0");
+    if (isNaN(price) || price < 0) {
+      throw new Error(
+        `Invalid price on line ${i + 1}: "${values[priceIdx]?.trim()}". Must be a non-negative number.`,
+      );
+    }
+
     const brokerage = parseFloat(values[brokerageIdx] || "0");
+    if (isNaN(brokerage) || brokerage < 0) {
+      throw new Error(
+        `Invalid brokerage on line ${i + 1}: "${values[brokerageIdx]?.trim()}". Must be a non-negative number.`,
+      );
+    }
+
     const total = parseFloat(values[totalIdx] || "0");
+    if (isNaN(total) || total < 0) {
+      throw new Error(
+        `Invalid total on line ${i + 1}: "${values[totalIdx]?.trim()}". Must be a non-negative number.`,
+      );
+    }
 
     trades.push({
       tradeId: values[tradeIdIdx]?.trim() || `T${i}`,
       matchId: values[matchIdIdx]?.trim() || "",
-      date: values[dateIdx]?.trim(),
+      date,
       action,
       code: values[codeIdx]?.trim() || "",
       units,
@@ -112,6 +145,12 @@ export function isCgtDiscountEligible(
   return diffDays > CGT_DISCOUNT_DAYS;
 }
 
+export function getHeldDays(buyDate: string, sellDate: string): number {
+  return Math.round(
+    (new Date(sellDate).getTime() - new Date(buyDate).getTime()) / MS_PER_DAY,
+  );
+}
+
 export function sortParcelsByStrategy(
   parcels: Parcel[],
   strategy: MatchStrategy,
@@ -129,40 +168,28 @@ export function sortParcelsByStrategy(
       );
       break;
     case "min-cost-base":
-      // Lowest cost base first -> maximises gains
       sorted.sort((a, b) => a.costBasePerUnit - b.costBasePerUnit);
       break;
     case "max-cost-base":
-      // Highest cost base first -> minimises gains
       sorted.sort((a, b) => b.costBasePerUnit - a.costBasePerUnit);
       break;
     case "min-taxable-income":
-      // Minimise taxable income: prefer parcels that result in smallest taxable amount
-      // After CGT discount, taxable = gain * (eligible ? 0.5 : 1)
-      // Sort by effective cost base descending (highest cost = lowest gain)
-      // Break ties by preferring discount-eligible (held > 12 months)
       sorted.sort((a, b) => {
-        // Higher cost base -> lower gain -> lower taxable income
         if (a.costBasePerUnit !== b.costBasePerUnit) {
           return b.costBasePerUnit - a.costBasePerUnit;
         }
-        // Prefer older parcels (more likely to be CGT discount eligible)
         return new Date(a.date).getTime() - new Date(b.date).getTime();
       });
       break;
     case "max-taxable-income":
-      // Maximise taxable income: prefer parcels that result in largest taxable amount
       sorted.sort((a, b) => {
-        // Lower cost base -> higher gain -> higher taxable income
         if (a.costBasePerUnit !== b.costBasePerUnit) {
           return a.costBasePerUnit - b.costBasePerUnit;
         }
-        // Prefer newer parcels (less likely to be CGT discount eligible)
         return new Date(b.date).getTime() - new Date(a.date).getTime();
       });
       break;
     case "manual":
-      // Manual matching doesn't use automatic parcel sorting
       break;
   }
   return sorted;
@@ -171,19 +198,14 @@ export function sortParcelsByStrategy(
 export function matchTrades(
   trades: Trade[],
   strategy: MatchStrategy,
-): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
+): MatchResult {
   if (strategy === "manual") {
     return matchManual(trades);
   }
   return matchAutomatic(trades, strategy);
 }
 
-function matchManual(trades: Trade[]): {
-  matches: Match[];
-  unmatchedSells: Trade[];
-  remainingParcels: Parcel[];
-} {
-  // Group trades by match_id
+function matchManual(trades: Trade[]): MatchResult {
   const matchGroups = new Map<string, Trade[]>();
   const unmatchedSells: Trade[] = [];
 
@@ -216,7 +238,6 @@ function matchManual(trades: Trade[]): {
         const sellProceeds =
           (sell.price * matchedUnits) +
           (matchedUnits / sell.units) * sell.brokerage;
-        // For sells, brokerage reduces proceeds
         const netProceeds =
           sell.price * matchedUnits -
           (matchedUnits / sell.units) * sell.brokerage;
@@ -253,13 +274,11 @@ function matchManual(trades: Trade[]): {
     }
   }
 
-  // Check for sells without match_id
   const sellsNoMatch = trades.filter(
     (t) => t.action === "Sell" && !t.matchId,
   );
   unmatchedSells.push(...sellsNoMatch);
 
-  // Remaining parcels are buys not used in manual matching
   const allBuys = trades.filter((t) => t.action === "Buy");
   const remainingParcels = tradesToParcels(
     allBuys.filter((b) => !usedBuyIds.has(b.tradeId)),
@@ -268,19 +287,20 @@ function matchManual(trades: Trade[]): {
   return { matches, unmatchedSells, remainingParcels };
 }
 
-function matchAutomatic(
+export function matchAutomatic(
   trades: Trade[],
   strategy: MatchStrategy,
-): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
+): MatchResult {
   const parcels = tradesToParcels(trades);
   const sells = trades
     .filter((t) => t.action === "Sell")
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    .sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
 
   const matches: Match[] = [];
   const unmatchedSells: Trade[] = [];
 
-  // Group parcels by code
   const parcelsByCode = new Map<string, Parcel[]>();
   for (const p of parcels) {
     const group = parcelsByCode.get(p.code) || [];
@@ -308,18 +328,18 @@ function matchAutomatic(
     for (const parcel of sortedParcels) {
       if (remainingSellUnits <= 0) break;
 
-      const matchedUnits = Math.min(remainingSellUnits, parcel.unitsRemaining);
+      const matchedUnits = Math.min(
+        remainingSellUnits,
+        parcel.unitsRemaining,
+      );
       parcel.unitsRemaining -= matchedUnits;
       remainingSellUnits -= matchedUnits;
 
-      // Proportional brokerage for the sell
       const sellBrokeragePortion =
         (matchedUnits / sell.units) * sell.brokerage;
       totalSellBrokerageAllocated += sellBrokeragePortion;
 
-      // Proceeds = price * units - proportional brokerage
       const netProceeds = sell.price * matchedUnits - sellBrokeragePortion;
-      // Cost base = buy price * units + proportional brokerage
       const buyCostBase =
         (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
 
@@ -346,7 +366,9 @@ function matchAutomatic(
       unmatchedSells.push({
         ...sell,
         units: remainingSellUnits,
-        total: sell.price * remainingSellUnits - sell.brokerage * (remainingSellUnits / sell.units),
+        total:
+          sell.price * remainingSellUnits -
+          sell.brokerage * (remainingSellUnits / sell.units),
       });
     }
   }
@@ -356,13 +378,15 @@ function matchAutomatic(
   return { matches, unmatchedSells, remainingParcels };
 }
 
-export function calculateCgtSummary(matches: Match[]): CgtSummary {
+export function calculateCgtSummary(
+  result: MatchResult,
+): CgtSummary {
   let totalProceeds = 0;
   let totalCostBase = 0;
   let totalCapitalGain = 0;
   let totalDiscountedGain = 0;
 
-  for (const m of matches) {
+  for (const m of result.matches) {
     totalProceeds += m.sellProceeds;
     totalCostBase += m.buyCostBase;
     totalCapitalGain += m.capitalGain;
@@ -377,9 +401,9 @@ export function calculateCgtSummary(matches: Match[]): CgtSummary {
     totalCapitalGain,
     totalDiscountedGain,
     totalDiscountAmount,
-    matchCount: matches.length,
-    unmatchedSells: [],
-    remainingParcels: [],
+    matchCount: result.matches.length,
+    unmatchedSells: result.unmatchedSells,
+    remainingParcels: result.remainingParcels,
   };
 }
 
@@ -404,7 +428,7 @@ export function formatDate(dateStr: string): string {
 export function getFinancialYear(dateStr: string): number {
   const d = new Date(dateStr);
   const y = d.getFullYear();
-  return d.getMonth() >= 6 ? y + 1 : y; // months 0-indexed, 6 = July
+  return d.getMonth() >= 6 ? y + 1 : y;
 }
 
 export function getFinancialYearLabel(fy: number): string {
@@ -419,6 +443,10 @@ export function getFinancialYearRange(fy: number): {
     start: `${fy - 1}-07-01`,
     end: `${fy}-06-30`,
   };
+}
+
+export function matchKey(m: Match): string {
+  return `${m.buyTradeId}-${m.sellTradeId}-${m.units}`;
 }
 
 export function getTradeFinancialYears(trades: Trade[]): number[] {
@@ -437,14 +465,13 @@ export function filterTradesByFinancialYear(
 ): Trade[] {
   const { start, end } = getFinancialYearRange(fy);
   const startTime = new Date(start).getTime();
-  const endTime = new Date(end).getTime() + 86400000; // inclusive end of day
+  const endTime = new Date(end).getTime() + MS_PER_DAY;
 
   return trades.map((t) => t).filter((t) => {
     if (t.action === "Sell") {
       const tTime = new Date(t.date).getTime();
       return tTime >= startTime && tTime < endTime;
     }
-    // Include all buys - parcels purchased before the FY may be sold within it
     return true;
   });
 }
