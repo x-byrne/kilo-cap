@@ -22,7 +22,17 @@ import {
   getFinancialYear,
   getFinancialYearLabel,
   filterTradesByFinancialYear,
+  exportCgtReport,
+  detectBrokerFormat,
+  calculateDetailedFyBreakdown,
+  calculateCgtDiscountBreakdown,
+  calculateAssetBreakdown,
 } from "@/lib/cgt";
+import type { BrokerFormat } from "@/lib/types";
+import { SummaryCard } from "@/components/SummaryCard";
+import { MatchResultsTable } from "@/components/MatchResultsTable";
+import { ParcelsTable } from "@/components/ParcelsTable";
+import { TradesTable } from "@/components/TradesTable";
 
 const SAMPLE_CSV = `trade_id,match_id,date,action,code,units,price,brokerage,total
 T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
@@ -75,6 +85,7 @@ function buildMatchFromKey(
     sellProceeds: netProceeds,
     buyCostBase,
     capitalGain,
+    isLoss: capitalGain < 0,
     cgtDiscountEligible: eligible,
     discountedGain,
   };
@@ -246,6 +257,7 @@ function matchManualWithLocked(
           sellProceeds: netProceeds,
           buyCostBase,
           capitalGain,
+          isLoss: capitalGain < 0,
           cgtDiscountEligible: eligible,
           discountedGain,
         });
@@ -318,14 +330,14 @@ function matchAutomaticWithAvailable(
       if (remainingSellUnits <= 0) break;
 
       const matchedUnits = Math.min(remainingSellUnits, parcel.unitsRemaining);
-      parcel.unitsRemaining -= matchedUnits;
+      const updatedParcel = { ...parcel, unitsRemaining: parcel.unitsRemaining - matchedUnits };
       remainingSellUnits -= matchedUnits;
 
       const sellBrokeragePortion =
         (matchedUnits / sell.units) * sell.brokerage;
       const netProceeds = sell.price * matchedUnits - sellBrokeragePortion;
       const buyCostBase =
-        (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
+        (updatedParcel.totalCostBase / updatedParcel.totalUnits) * matchedUnits;
       const capitalGain = netProceeds - buyCostBase;
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
       const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
@@ -340,6 +352,7 @@ function matchAutomaticWithAvailable(
         sellProceeds: netProceeds,
         buyCostBase,
         capitalGain,
+        isLoss: capitalGain < 0,
         cgtDiscountEligible: eligible,
         discountedGain,
       });
@@ -368,14 +381,22 @@ export default function CgtCalculator() {
   const [remainingParcels, setRemainingParcels] = useState<Parcel[]>([]);
   const [summary, setSummary] = useState<CgtSummary | null>(null);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"matches" | "parcels" | "trades">(
-    "matches",
-  );
+  const [activeTab, setActiveTab] = useState<
+    "matches" | "byasset" | "parcels" | "trades"
+  >("matches");
   const [lockedMatchKeys, setLockedMatchKeys] = useState<Set<string>>(
     new Set(),
   );
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [financialYears, setFinancialYears] = useState<number[]>([]);
+  const [brokerFormat, setBrokerFormat] = useState<{
+    format: BrokerFormat;
+    hint: string;
+  } | null>(null);
+  const [showFormatHelp, setShowFormatHelp] = useState(false);
+  const [assetSort, setAssetSort] = useState<
+    "gain-desc" | "loss-desc" | "alpha-asc"
+  >("gain-desc");
 
   const applyResults = useCallback(
     (
@@ -388,13 +409,16 @@ export default function CgtCalculator() {
       setMatches(result.matches);
       setUnmatchedSells(result.unmatchedSells);
       setRemainingParcels(result.remainingParcels);
-      setSummary(calculateCgtSummary(result.matches));
+      setSummary(
+        calculateCgtSummary(result.matches, result.unmatchedSells, result.remainingParcels),
+      );
     },
     [],
   );
 
   const handleParse = useCallback(() => {
     setError("");
+    setBrokerFormat(null);
     try {
       const parsed = parseCsv(csvText);
       if (parsed.length === 0) {
@@ -402,6 +426,8 @@ export default function CgtCalculator() {
         return;
       }
       setTrades(parsed);
+      const formatResult = detectBrokerFormat(csvText);
+      setBrokerFormat(formatResult);
       const years = getTradeFinancialYears(parsed);
       setFinancialYears(years);
       const fy = years.length > 0 ? years[0] : null;
@@ -413,6 +439,19 @@ export default function CgtCalculator() {
       setError(e instanceof Error ? e.message : "Failed to parse CSV");
     }
   }, [csvText, strategy, lockedMatchKeys, applyResults]);
+
+  const handleCsvChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setCsvText(e.target.value);
+      if (e.target.value.trim().length > 10) {
+        const result = detectBrokerFormat(e.target.value);
+        setBrokerFormat(result);
+      } else {
+        setBrokerFormat(null);
+      }
+    },
+    [],
+  );
 
   const handleStrategyChange = useCallback(
     (newStrategy: MatchStrategy) => {
@@ -428,7 +467,7 @@ export default function CgtCalculator() {
   const handleToggleLock = useCallback(
     (m: Match) => {
       const key = matchKey(m);
-      const next = new Set(lockedMatchKeys);
+      const next = new Set<string>(lockedMatchKeys);
       if (next.has(key)) {
         next.delete(key);
       } else {
@@ -478,66 +517,18 @@ export default function CgtCalculator() {
 
   const handleExport = useCallback(() => {
     if (!matches.length && !unmatchedSells.length) return;
-
-    const header =
-      "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,Status";
-    const rows: string[] = [];
-
-    for (const m of matches) {
-      const heldDays = Math.round(
-        (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
-          86400000,
-      );
-      rows.push(
-        [
-          m.sellTradeId,
-          m.buyTradeId,
-          m.code,
-          m.units,
-          m.buyDate,
-          m.sellDate,
-          heldDays,
-          m.sellProceeds.toFixed(2),
-          m.buyCostBase.toFixed(2),
-          m.capitalGain.toFixed(2),
-          m.cgtDiscountEligible ? "Yes" : "No",
-          m.discountedGain.toFixed(2),
-          "Matched",
-        ].join(","),
-      );
-    }
-
-    for (const s of unmatchedSells) {
-      const proceeds = s.price * s.units - s.brokerage;
-      rows.push(
-        [
-          s.tradeId,
-          "",
-          s.code,
-          s.units,
-          "",
-          s.date,
-          "",
-          proceeds.toFixed(2),
-          "",
-          "",
-          "",
-          "",
-          "Unmatched",
-        ].join(","),
-      );
-    }
-
-    const csv = [header, ...rows].join("\n");
+    const csv = exportCgtReport(matches, unmatchedSells, summary!, selectedFy);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const fyLabel = selectedFy ? `_FY${selectedFy}` : "_all";
+    const fyLabel = selectedFy
+      ? getFinancialYearLabel(selectedFy).replace("/", "_")
+      : "all";
     a.href = url;
-    a.download = `cgt_report${fyLabel}.csv`;
+    a.download = `cgt_report_FY${fyLabel}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [matches, unmatchedSells, selectedFy]);
+  }, [matches, unmatchedSells, summary, selectedFy]);
 
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -599,7 +590,7 @@ export default function CgtCalculator() {
 
           <textarea
             value={csvText}
-            onChange={(e) => setCsvText(e.target.value)}
+            onChange={handleCsvChange}
             placeholder="Paste CSV data here...
 
 Expected columns: trade_id, match_id, date, action, code, units, price, brokerage, total
@@ -609,6 +600,67 @@ trade_id,match_id,date,action,code,units,price,brokerage,total
 T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
             className="w-full h-40 bg-neutral-900 border border-neutral-700 rounded-lg p-4 font-mono text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
           />
+
+          {brokerFormat && (
+            <div
+              className={`mt-3 p-3 rounded-lg border text-sm ${
+                brokerFormat.format === "generic"
+                  ? "bg-blue-500/10 border-blue-500/30 text-blue-300"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-300"
+              }`}
+            >
+              {brokerFormat.hint}
+            </div>
+          )}
+
+          <div className="mt-3 flex items-center gap-4">
+            <button
+              onClick={() => setShowFormatHelp((prev) => !prev)}
+              className="text-sm px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+            >
+              {showFormatHelp ? "Hide Format Help" : "Format Help"}
+            </button>
+          </div>
+
+          {showFormatHelp && (
+            <div className="mt-3 p-4 bg-neutral-900 border border-neutral-700 rounded-lg text-sm text-neutral-300">
+              <h3 className="font-semibold text-neutral-200 mb-2">
+                Supported Australian Broker Formats
+              </h3>
+              <div className="space-y-3">
+                <div>
+                  <span className="text-amber-400 font-medium">CommSec</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Reference,Details,Debit,Credit,Balance,Quantity,Price,Brokerage,Total
+2021-01-20,REF001,Buy LRSOC,,5288.06,5288.06,135175,0.03905,9.5,5288.06
+2021-02-15,REF002,Sell LRSOC,11657.14,,,194444,0.06,9.5,11657.14</pre>
+                </div>
+                <div>
+                  <span className="text-amber-400 font-medium">SelfWealth</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Activity,Code,Quantity,Price,Amount,Brokerage
+2021-01-20,Buy,LRSOC,135175,0.03905,5288.06,9.5
+2021-02-15,Sell,LRSOC,194444,0.06,11657.14,9.5</pre>
+                </div>
+                <div>
+                  <span className="text-amber-400 font-medium">Stake</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Type,Code,Quantity,Price,Fees,Amount
+2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
+2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
+                </div>
+                <div>
+                  <span className="text-amber-400 font-medium">TradeZero</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">Date,Order ID,Type,Symbol,Quantity,Price,Commission,Net Amount
+2021-01-20,ORD001,Buy,LRSOC,135175,0.03905,9.5,5288.06
+2021-02-15,ORD002,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
+                </div>
+                <div>
+                  <span className="text-blue-400 font-medium">Generic / Standard</span>
+                  <pre className="mt-1 text-xs text-neutral-400 bg-neutral-950 p-2 rounded overflow-x-auto">trade_id,match_id,date,action,code,units,price,brokerage,total
+T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
+T003,M003,2021-02-15,Sell,LRSOC,194444,0.06,9.5,11657.14</pre>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="mt-3 flex items-center gap-4">
             <button
@@ -752,6 +804,29 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                       : ""
                 }
               />
+              <SummaryCard
+                label="Total Capital Losses"
+                value={formatCurrency(summary.totalCapitalLosses)}
+                highlight="text-red-400"
+              />
+              <SummaryCard
+                label="Net Capital Gain"
+                value={formatCurrency(summary.netCapitalGain)}
+                highlight={
+                  summary.netCapitalGain > 0
+                    ? "text-green-400"
+                    : summary.netCapitalGain < 0
+                      ? "text-red-400"
+                      : ""
+                }
+              />
+              {summary.lossCarryForward < 0 && (
+                <SummaryCard
+                  label="Loss Carry-Forward"
+                  value={formatCurrency(summary.lossCarryForward)}
+                  highlight="text-red-400"
+                />
+              )}
             </div>
             {summary.totalDiscountAmount > 0 && (
               <div className="mt-3 text-sm text-neutral-400">
@@ -765,6 +840,183 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
           </section>
         )}
 
+        {/* Net Capital Gain Summary */}
+        {summary && matches.length > 0 && (() => {
+          const discountBreakdown = calculateCgtDiscountBreakdown(matches);
+          return (
+            <section className="mb-8">
+              <h2 className="text-lg font-semibold mb-4">Net Capital Gain Summary</h2>
+              <div className="bg-neutral-900 border border-neutral-800 rounded-lg overflow-hidden divide-y divide-neutral-800">
+                <div className="flex justify-between px-4 py-3">
+                  <span className="text-sm text-neutral-400">
+                    Capital gains eligible for 50% CGT discount
+                  </span>
+                  <span className="text-sm font-mono text-green-400">
+                    {formatCurrency(discountBreakdown.eligibleGains)}
+                  </span>
+                </div>
+                <div className="flex justify-between px-4 py-3">
+                  <span className="text-sm text-neutral-400">
+                    Capital gains not eligible for CGT discount
+                  </span>
+                  <span className="text-sm font-mono text-blue-400">
+                    {formatCurrency(discountBreakdown.ineligibleGains)}
+                  </span>
+                </div>
+                <div className="flex justify-between px-4 py-3">
+                  <span className="text-sm text-neutral-400">
+                    Capital losses offsetting gains
+                  </span>
+                  <span className="text-sm font-mono text-red-400">
+                    ({formatCurrency(Math.abs(discountBreakdown.totalLosses))})
+                  </span>
+                </div>
+                <div className="flex justify-between px-4 py-3 bg-neutral-800/30">
+                  <span className="text-sm font-medium text-neutral-200">
+                    Net result after all offsets
+                  </span>
+                  <span
+                    className={`text-sm font-mono font-medium ${
+                      discountBreakdown.netGain > 0
+                        ? "text-green-400"
+                        : discountBreakdown.netGain < 0
+                          ? "text-red-400"
+                          : "text-neutral-400"
+                    }`}
+                  >
+                    {formatCurrency(discountBreakdown.netGain)}
+                  </span>
+                </div>
+              </div>
+            </section>
+          );
+        })()}
+
+        {/* Capital Gains & Losses by Financial Year */}
+        {summary && matches.length > 0 && (() => {
+          const fyBreakdown = calculateDetailedFyBreakdown(matches);
+          const sortedFys = Object.keys(fyBreakdown)
+            .map(Number)
+            .sort((a, b) => a - b);
+          const hasCarryForward = sortedFys.some(
+            (fy) => fyBreakdown[fy].carryForward < 0,
+          );
+          return (
+            <section className="mb-8">
+              <h2 className="text-lg font-semibold mb-4">
+                Capital Gains & Losses by Financial Year
+              </h2>
+              <div className="overflow-x-auto rounded-lg border border-neutral-800">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-neutral-900 text-neutral-400 text-left">
+                      <th className="px-4 py-3 font-medium">Financial Year</th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Total Gains (before discount)
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Total Losses
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Net Capital Gain/Loss
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        CGT Discount Applied
+                      </th>
+                      <th className="px-4 py-3 font-medium text-right">
+                        Loss Carry-Forward
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-800">
+                    {sortedFys.map((fy) => {
+                      const data = fyBreakdown[fy];
+                      const rowHasCarryForward = data.carryForward < 0;
+                      return (
+                        <tr
+                          key={fy}
+                          className={
+                            rowHasCarryForward
+                              ? "bg-red-500/5"
+                              : "bg-neutral-950"
+                          }
+                        >
+                          <td className="px-4 py-3 font-medium">
+                            {getFinancialYearLabel(fy)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-green-400">
+                            {formatCurrency(data.gains)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-red-400">
+                            {formatCurrency(data.losses)}
+                          </td>
+                          <td
+                            className={`px-4 py-3 text-right font-mono ${
+                              data.net > 0
+                                ? "text-green-400"
+                                : data.net < 0
+                                  ? "text-red-400"
+                                  : "text-neutral-400"
+                            }`}
+                          >
+                            {formatCurrency(data.net)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-green-400">
+                            {formatCurrency(data.discountApplied)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono">
+                            {rowHasCarryForward ? (
+                              <span className="text-red-400 font-medium flex items-center justify-end gap-1">
+                                <svg
+                                  className="w-3 h-3"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="M13 7l5 5m0 0l-5 5m5-5H6"
+                                  />
+                                </svg>
+                                {formatCurrency(data.carryForward)}
+                              </span>
+                            ) : (
+                              <span className="text-neutral-500">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {hasCarryForward && (
+                <div className="mt-3 text-sm text-neutral-400 flex items-center gap-2">
+                  <svg
+                    className="w-4 h-4 text-amber-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <span>
+                    Losses highlighted in red are being carried forward to
+                    future financial years to offset future capital gains.
+                  </span>
+                </div>
+              )}
+            </section>
+          );
+        })()}
+
         {/* Tab Navigation */}
         {trades.length > 0 && (
           <section>
@@ -772,6 +1024,7 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
               {(
                 [
                   ["matches", "Matched Trades"],
+                  ["byasset", "By Asset"],
                   ["parcels", "Remaining Parcels"],
                   ["trades", "All Trades"],
                 ] as const
@@ -800,6 +1053,161 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                 onUnlockAll={handleUnlockAll}
               />
             )}
+            {activeTab === "byasset" && matches.length > 0 && (() => {
+              const filteredMatches = selectedFy
+                ? matches.filter(
+                    (m) => getFinancialYear(m.sellDate) === selectedFy,
+                  )
+                : matches;
+              const assetBreakdown = calculateAssetBreakdown(filteredMatches);
+              const sortedAssets = Array.from(assetBreakdown.values());
+              switch (assetSort) {
+                case "gain-desc":
+                  sortedAssets.sort((a, b) => b.netCapitalGain - a.netCapitalGain);
+                  break;
+                case "loss-desc":
+                  sortedAssets.sort((a, b) => a.netCapitalGain - b.netCapitalGain);
+                  break;
+                case "alpha-asc":
+                  sortedAssets.sort((a, b) => a.code.localeCompare(b.code));
+                  break;
+              }
+              const totalNetGain = sortedAssets.reduce(
+                (s, a) => s + a.netCapitalGain,
+                0,
+              );
+              return (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <label
+                      htmlFor="asset-sort"
+                      className="text-sm text-neutral-400"
+                    >
+                      Sort by
+                    </label>
+                    <select
+                      id="asset-sort"
+                      value={assetSort}
+                      onChange={(e) =>
+                        setAssetSort(
+                          e.target.value as "gain-desc" | "loss-desc" | "alpha-asc",
+                        )
+                      }
+                      className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="gain-desc">Highest Gain First</option>
+                      <option value="loss-desc">Highest Loss First</option>
+                      <option value="alpha-asc">Alphabetical</option>
+                    </select>
+                  </div>
+                  {sortedAssets.length > 0 ? (
+                    <div className="overflow-x-auto rounded-lg border border-neutral-800">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-neutral-900 text-neutral-400 text-left">
+                            <th className="px-4 py-3 font-medium">Asset</th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Matches
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Total Proceeds
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Total Cost Base
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Capital Gain/Loss
+                            </th>
+                            <th className="px-4 py-3 font-medium text-center">
+                              CGT Discount Eligible
+                            </th>
+                            <th className="px-4 py-3 font-medium text-right">
+                              Taxable Gain
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-800">
+                          {sortedAssets.map((asset) => (
+                            <tr
+                              key={asset.code}
+                              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
+                            >
+                              <td className="px-4 py-3 font-mono font-medium">
+                                {asset.code}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {asset.totalMatches}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {formatCurrency(asset.totalProceeds)}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {formatCurrency(asset.totalCostBase)}
+                              </td>
+                              <td
+                                className={`px-4 py-3 text-right font-mono ${
+                                  asset.netCapitalGain >= 0
+                                    ? "text-green-400"
+                                    : "text-red-400"
+                                }`}
+                              >
+                                {formatCurrency(asset.netCapitalGain)}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {asset.cgtDiscountEligibleCount > 0 ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+                                    {asset.cgtDiscountEligibleCount}
+                                  </span>
+                                ) : (
+                                  <span className="text-neutral-500">0</span>
+                                )}
+                              </td>
+                              <td
+                                className={`px-4 py-3 text-right font-mono ${
+                                  asset.netCapitalGain >= 0
+                                    ? "text-green-400"
+                                    : "text-red-400"
+                                }`}
+                              >
+                                {formatCurrency(
+                                  asset.netCapitalGain >= 0
+                                    ? asset.netCapitalGain * 0.5
+                                    : asset.netCapitalGain,
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="bg-neutral-900 font-medium">
+                            <td
+                              className="px-4 py-3"
+                              colSpan={4}
+                            >
+                              Total Net Capital Gain
+                            </td>
+                            <td
+                              className={`px-4 py-3 text-right font-mono ${
+                                totalNetGain >= 0
+                                  ? "text-green-400"
+                                  : "text-red-400"
+                              }`}
+                            >
+                              {formatCurrency(totalNetGain)}
+                            </td>
+                            <td colSpan={2} />
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-neutral-500 py-8 text-center border border-neutral-800 rounded-lg">
+                      No asset data available for the selected filters.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             {activeTab === "parcels" && (
               <ParcelsTable parcels={remainingParcels} />
             )}
@@ -823,377 +1231,4 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  highlight = "",
-}: {
-  label: string;
-  value: string;
-  highlight?: string;
-}) {
-  return (
-    <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-      <div className="text-xs text-neutral-500 uppercase tracking-wider">
-        {label}
-      </div>
-      <div
-        className={`mt-1 text-xl font-semibold ${highlight || "text-neutral-100"}`}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
 
-function MatchResultsTable({
-  matches,
-  unmatchedSells,
-  lockedMatchKeys,
-  onToggleLock,
-  onLockAll,
-  onUnlockAll,
-}: {
-  matches: Match[];
-  unmatchedSells: Trade[];
-  lockedMatchKeys: Set<string>;
-  onToggleLock: (m: Match) => void;
-  onLockAll: () => void;
-  onUnlockAll: () => void;
-}) {
-  return (
-    <div>
-      {matches.length > 0 && (
-        <div className="flex items-center justify-end gap-2 mb-3">
-          <button
-            onClick={onLockAll}
-            className="text-xs px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
-          >
-            Lock All
-          </button>
-          <button
-            onClick={onUnlockAll}
-            className="text-xs px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
-          >
-            Unlock All
-          </button>
-        </div>
-      )}
-
-      {matches.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border border-neutral-800">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-neutral-900 text-neutral-400 text-left">
-                <th className="px-4 py-3 font-medium w-10">
-                  <span className="sr-only">Lock</span>
-                </th>
-                <th className="px-4 py-3 font-medium">Code</th>
-                <th className="px-4 py-3 font-medium text-right">Units</th>
-                <th className="px-4 py-3 font-medium">Buy Date</th>
-                <th className="px-4 py-3 font-medium">Sell Date</th>
-                <th className="px-4 py-3 font-medium">Held</th>
-                <th className="px-4 py-3 font-medium text-right">Proceeds</th>
-                <th className="px-4 py-3 font-medium text-right">Cost Base</th>
-                <th className="px-4 py-3 font-medium text-right">
-                  Capital Gain
-                </th>
-                <th className="px-4 py-3 font-medium text-center">
-                  CGT Discount
-                </th>
-                <th className="px-4 py-3 font-medium text-right">
-                  Taxable Gain
-                </th>
-                <th className="px-4 py-3 font-medium">Sell ID</th>
-                <th className="px-4 py-3 font-medium">Buy ID</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-800">
-              {matches.map((m, i) => {
-                const key = matchKey(m);
-                const locked = lockedMatchKeys.has(key);
-                const heldDays = Math.round(
-                  (new Date(m.sellDate).getTime() -
-                    new Date(m.buyDate).getTime()) /
-                    (1000 * 60 * 60 * 24),
-                );
-                return (
-                  <tr
-                    key={`${key}-${i}`}
-                    className={`transition-colors ${
-                      locked
-                        ? "bg-amber-500/5"
-                        : "bg-neutral-950 hover:bg-neutral-900/50"
-                    }`}
-                  >
-                    <td className="px-4 py-3">
-                      <button
-                        onClick={() => onToggleLock(m)}
-                        title={locked ? "Unlock match" : "Lock match"}
-                        className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
-                          locked
-                            ? "bg-amber-500/20 border-amber-500 text-amber-400"
-                            : "border-neutral-600 hover:border-neutral-400"
-                        }`}
-                      >
-                        {locked ? (
-                          <svg
-                            className="w-3 h-3"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={2.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-                            />
-                          </svg>
-                        ) : null}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3 font-mono font-medium">
-                      {m.code}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {m.units.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3">{formatDate(m.buyDate)}</td>
-                    <td className="px-4 py-3">{formatDate(m.sellDate)}</td>
-                    <td className="px-4 py-3 text-neutral-400">
-                      {heldDays}d
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {formatCurrency(m.sellProceeds)}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono">
-                      {formatCurrency(m.buyCostBase)}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right font-mono ${
-                        m.capitalGain >= 0 ? "text-green-400" : "text-red-400"
-                      }`}
-                    >
-                      {formatCurrency(m.capitalGain)}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      {m.cgtDiscountEligible ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                          50%
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-neutral-800 text-neutral-500">
-                          No
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right font-mono font-medium ${
-                        m.discountedGain >= 0
-                          ? "text-green-400"
-                          : "text-red-400"
-                      }`}
-                    >
-                      {formatCurrency(m.discountedGain)}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-neutral-400 text-xs">
-                      {m.sellTradeId}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-neutral-400 text-xs">
-                      {m.buyTradeId}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="bg-neutral-900 font-medium">
-                <td />
-                <td className="px-4 py-3" colSpan={4}>
-                  Total ({matches.length} matches)
-                </td>
-                <td />
-                <td className="px-4 py-3 text-right font-mono">
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.sellProceeds, 0),
-                  )}
-                </td>
-                <td className="px-4 py-3 text-right font-mono">
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.buyCostBase, 0),
-                  )}
-                </td>
-                <td
-                  className={`px-4 py-3 text-right font-mono ${
-                    matches.reduce((s, m) => s + m.capitalGain, 0) >= 0
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }`}
-                >
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.capitalGain, 0),
-                  )}
-                </td>
-                <td />
-                <td
-                  className={`px-4 py-3 text-right font-mono ${
-                    matches.reduce((s, m) => s + m.discountedGain, 0) >= 0
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }`}
-                >
-                  {formatCurrency(
-                    matches.reduce((s, m) => s + m.discountedGain, 0),
-                  )}
-                </td>
-                <td colSpan={2} />
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      ) : (
-        <div className="text-sm text-neutral-500 py-8 text-center border border-neutral-800 rounded-lg">
-          No matches found. Try a different strategy or add more buy trades.
-        </div>
-      )}
-
-      {unmatchedSells.length > 0 && (
-        <div className="mt-4 p-4 rounded-lg border border-amber-500/30 bg-amber-500/5">
-          <h3 className="text-sm font-medium text-amber-400 mb-2">
-            Unmatched Sells ({unmatchedSells.length})
-          </h3>
-          <div className="text-sm text-neutral-400">
-            {unmatchedSells.map((s) => (
-              <div key={s.tradeId} className="flex gap-4 py-1">
-                <span className="font-mono text-amber-300">{s.tradeId}</span>
-                <span>
-                  {s.code} &mdash; {s.units.toLocaleString()} units on{" "}
-                  {formatDate(s.date)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ParcelsTable({ parcels }: { parcels: Parcel[] }) {
-  if (parcels.length === 0) {
-    return (
-      <div className="text-sm text-neutral-500 py-8 text-center">
-        All parcels have been fully matched.
-      </div>
-    );
-  }
-
-  return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-neutral-900 text-neutral-400 text-left">
-            <th className="px-4 py-3 font-medium">Buy ID</th>
-            <th className="px-4 py-3 font-medium">Code</th>
-            <th className="px-4 py-3 font-medium">Date</th>
-            <th className="px-4 py-3 font-medium text-right">Original Units</th>
-            <th className="px-4 py-3 font-medium text-right">
-              Remaining Units
-            </th>
-            <th className="px-4 py-3 font-medium text-right">
-              Cost Base/Unit
-            </th>
-            <th className="px-4 py-3 font-medium text-right">
-              Remaining Cost Base
-            </th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-800">
-          {parcels.map((p) => (
-            <tr
-              key={p.tradeId}
-              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
-            >
-              <td className="px-4 py-3 font-mono">{p.tradeId}</td>
-              <td className="px-4 py-3 font-mono font-medium">{p.code}</td>
-              <td className="px-4 py-3">{formatDate(p.date)}</td>
-              <td className="px-4 py-3 text-right font-mono">
-                {p.totalUnits.toLocaleString()}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {p.unitsRemaining.toLocaleString()}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(p.costBasePerUnit)}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(p.costBasePerUnit * p.unitsRemaining)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function TradesTable({ trades }: { trades: Trade[] }) {
-  return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-neutral-900 text-neutral-400 text-left">
-            <th className="px-4 py-3 font-medium">ID</th>
-            <th className="px-4 py-3 font-medium">Match ID</th>
-            <th className="px-4 py-3 font-medium">Date</th>
-            <th className="px-4 py-3 font-medium">Action</th>
-            <th className="px-4 py-3 font-medium">Code</th>
-            <th className="px-4 py-3 font-medium text-right">Units</th>
-            <th className="px-4 py-3 font-medium text-right">Price</th>
-            <th className="px-4 py-3 font-medium text-right">Brokerage</th>
-            <th className="px-4 py-3 font-medium text-right">Total</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-800">
-          {trades.map((t) => (
-            <tr
-              key={t.tradeId}
-              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
-            >
-              <td className="px-4 py-3 font-mono">{t.tradeId}</td>
-              <td className="px-4 py-3 font-mono text-neutral-500">
-                {t.matchId || "\u2014"}
-              </td>
-              <td className="px-4 py-3">{formatDate(t.date)}</td>
-              <td className="px-4 py-3">
-                <span
-                  className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                    t.action === "Buy"
-                      ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                      : "bg-orange-500/10 text-orange-400 border border-orange-500/20"
-                  }`}
-                >
-                  {t.action}
-                </span>
-              </td>
-              <td className="px-4 py-3 font-mono font-medium">{t.code}</td>
-              <td className="px-4 py-3 text-right font-mono">
-                {t.units.toLocaleString()}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(t.price)}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(t.brokerage)}
-              </td>
-              <td className="px-4 py-3 text-right font-mono">
-                {formatCurrency(t.total)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}

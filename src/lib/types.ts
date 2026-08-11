@@ -41,6 +41,7 @@ export interface Match {
   sellProceeds: number; // proportional proceeds for matched units
   buyCostBase: number; // proportional cost base for matched units
   capitalGain: number; // proceeds - cost base
+  isLoss: boolean; // true when capitalGain < 0
   cgtDiscountEligible: boolean; // held > 12 months
   discountedGain: number; // gain after 50% CGT discount if eligible
 }
@@ -54,9 +55,15 @@ export interface CgtSummary {
   matchCount: number;
   unmatchedSells: Trade[];
   remainingParcels: Parcel[];
+  totalCapitalLosses: number;
+  netCapitalGain: number;
+  lossCarryForward: number;
+  fycgSummary: Record<number, { gains: number; losses: number; net: number; carryForward: number }>;
 }
 
 export interface MatchedTrade extends Trade {
   matchedUnits?: number;
   matchedWith?: string; // trade ID of the matched trade
 }
+
+export type BrokerFormat = "commsec" | "selfwealth" | "stake" | "tradezero" | "generic";
