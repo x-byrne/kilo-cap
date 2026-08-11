@@ -702,8 +702,10 @@ export function calculateLossOffsets(matches: Match[]): CgtSummary {
   for (const m of matches) {
     totalProceeds += m.sellProceeds;
     totalCostBase += m.buyCostBase;
-    totalCapitalGain += m.capitalGain;
-    totalDiscountedGain += m.discountedGain;
+    if (m.capitalGain > 0) {
+      totalCapitalGain += m.capitalGain;
+      totalDiscountedGain += m.discountedGain;
+    }
     if (m.capitalGain < 0) {
       totalCapitalLosses += m.capitalGain;
     }
