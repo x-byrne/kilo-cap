@@ -26,6 +26,18 @@ import {
   detectBrokerFormat,
 } from "@/lib/cgt";
 import { exportAtoReport } from "@/lib/atoExport";
+import {
+  type EntityType,
+} from "@/lib/entityRules";
+import {
+  getCgtDiscountRate,
+  getTaxRate,
+  getTaxRateLabel,
+  calculateEstimatedTax,
+  getActiveAssetExemptionNote,
+  ENTITY_TYPE_LABELS,
+  ENTITY_TYPE_DESCRIPTIONS,
+} from "@/lib/entityRules";
 
 const SAMPLE_CSV = `trade_id,match_id,date,action,code,units,price,brokerage,total
 T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
@@ -50,6 +62,7 @@ function matchKey(m: Match): string {
 function buildMatchFromKey(
   key: string,
   trades: Trade[],
+  discountRate = 0.5,
 ): Match | null {
   const parts = key.split("-");
   const units = parseInt(parts[parts.length - 1], 10);
@@ -68,7 +81,7 @@ function buildMatchFromKey(
   const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
   const eligible = isCgtDiscountEligible(buy.date, sell.date);
   const discountedGain =
-    eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
+    eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
   return {
     sellTradeId: sell.tradeId,
@@ -89,10 +102,11 @@ function buildMatchFromKey(
 function getLockedUnits(
   lockedMatchKeys: Set<string>,
   trades: Trade[],
+  discountRate = 0.5,
 ): Map<string, number> {
   const lockedUnits = new Map<string, number>();
   for (const key of lockedMatchKeys) {
-    const m = buildMatchFromKey(key, trades);
+    const m = buildMatchFromKey(key, trades, discountRate);
     if (!m) continue;
     lockedUnits.set(m.buyTradeId, (lockedUnits.get(m.buyTradeId) || 0) + m.units);
   }
@@ -103,6 +117,7 @@ function recalculate(
   currentTrades: Trade[],
   currentStrategy: MatchStrategy,
   lockedMatchKeys: Set<string>,
+  discountRate = 0.5,
 ): {
   matches: Match[];
   unmatchedSells: Trade[];
@@ -111,12 +126,11 @@ function recalculate(
   // Rebuild locked matches, dropping any whose trades no longer exist
   const lockedMatches: Match[] = [];
   for (const key of lockedMatchKeys) {
-    const m = buildMatchFromKey(key, currentTrades);
+    const m = buildMatchFromKey(key, currentTrades, discountRate);
     if (m) lockedMatches.push(m);
   }
 
-  // Calculate how many units of each buy trade are consumed by locked matches
-  const lockedUnits = getLockedUnits(lockedMatchKeys, currentTrades);
+  const lockedUnits = getLockedUnits(lockedMatchKeys, currentTrades, discountRate);
 
   // Build available parcels with locked units subtracted
   const allParcels = tradesToParcels(currentTrades);
@@ -161,6 +175,7 @@ function recalculate(
     const result = matchManualWithLocked(
       currentTrades,
       lockedMatchKeys,
+      discountRate,
     );
     newMatches = result.matches;
     unmatchedSells = result.unmatchedSells;
@@ -170,6 +185,7 @@ function recalculate(
       unlockedSells,
       availableParcels,
       currentStrategy,
+      discountRate,
     );
     newMatches = result.matches;
     unmatchedSells = result.unmatchedSells;
@@ -186,6 +202,7 @@ function recalculate(
 function matchManualWithLocked(
   trades: Trade[],
   lockedMatchKeys: Set<string>,
+  discountRate = 0.5,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   // Determine which trade IDs are consumed by locked matches
   const lockedBuyIds = new Set<string>();
@@ -242,7 +259,7 @@ function matchManualWithLocked(
         const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
         const eligible = isCgtDiscountEligible(buy.date, sell.date);
         const discountedGain =
-          eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
+          eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
         matches.push({
           sellTradeId: sell.tradeId,
@@ -295,6 +312,7 @@ function matchAutomaticWithAvailable(
   sells: Trade[],
   parcels: Parcel[],
   strategy: MatchStrategy,
+  discountRate = 0.5,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   const matches: Match[] = [];
   const unmatchedSells: Trade[] = [];
@@ -339,7 +357,7 @@ function matchAutomaticWithAvailable(
       const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
       const discountedGain =
-        eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
+        eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
       matches.push({
         sellTradeId: sell.tradeId,
@@ -389,6 +407,7 @@ export default function CgtCalculator() {
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [financialYears, setFinancialYears] = useState<number[]>([]);
   const [brokerFormat, setBrokerFormat] = useState<string>("unknown");
+  const [entityType, setEntityType] = useState<EntityType>("individual");
   const [lossCarryForwardHistory, setLossCarryForwardHistory] = useState<
     { fy: number; amount: number }[]
   >([]);
@@ -442,22 +461,24 @@ export default function CgtCalculator() {
       const fy = years.length > 0 ? years[0] : null;
       setSelectedFy(fy);
       const filtered = fy ? filterTradesByFinancialYear(parsed, fy) : parsed;
-      const result = recalculate(filtered, strategy, lockedMatchKeys);
+      const discountRate = getCgtDiscountRate(entityType);
+      const result = recalculate(filtered, strategy, lockedMatchKeys, discountRate);
       applyResults(result, fy);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to parse CSV");
     }
-  }, [csvText, strategy, lockedMatchKeys, applyResults]);
+  }, [csvText, strategy, lockedMatchKeys, applyResults, entityType]);
 
   const handleStrategyChange = useCallback(
     (newStrategy: MatchStrategy) => {
       setStrategy(newStrategy);
       if (trades.length > 0) {
-        const result = recalculate(trades, newStrategy, lockedMatchKeys);
+        const discountRate = getCgtDiscountRate(entityType);
+        const result = recalculate(trades, newStrategy, lockedMatchKeys, discountRate);
         applyResults(result, selectedFy);
       }
     },
-    [trades, lockedMatchKeys, applyResults, selectedFy],
+    [trades, lockedMatchKeys, applyResults, selectedFy, entityType],
   );
 
   const handleToggleLock = useCallback(
@@ -471,11 +492,12 @@ export default function CgtCalculator() {
       }
       setLockedMatchKeys(next);
       if (trades.length > 0) {
-        const result = recalculate(trades, strategy, next);
+        const discountRate = getCgtDiscountRate(entityType);
+        const result = recalculate(trades, strategy, next, discountRate);
         applyResults(result, selectedFy);
       }
     },
-    [lockedMatchKeys, trades, strategy, applyResults, selectedFy],
+    [lockedMatchKeys, trades, strategy, applyResults, selectedFy, entityType],
   );
 
   const handleLockAll = useCallback(() => {
@@ -492,10 +514,11 @@ export default function CgtCalculator() {
       const filtered = selectedFy
         ? filterTradesByFinancialYear(trades, selectedFy)
         : trades;
-      const result = recalculate(filtered, strategy, new Set<string>());
+      const discountRate = getCgtDiscountRate(entityType);
+      const result = recalculate(filtered, strategy, new Set<string>(), discountRate);
       applyResults(result, selectedFy);
     }
-  }, [trades, strategy, selectedFy, applyResults]);
+  }, [trades, strategy, selectedFy, applyResults, entityType]);
 
   const handleFyChange = useCallback(
     (fy: number | null) => {
@@ -504,11 +527,12 @@ export default function CgtCalculator() {
         const filtered = fy
           ? filterTradesByFinancialYear(trades, fy)
           : trades;
-        const result = recalculate(filtered, strategy, lockedMatchKeys);
+        const discountRate = getCgtDiscountRate(entityType);
+        const result = recalculate(filtered, strategy, lockedMatchKeys, discountRate);
         applyResults(result, fy);
       }
     },
-    [trades, strategy, lockedMatchKeys, applyResults],
+    [trades, strategy, lockedMatchKeys, applyResults, entityType],
   );
 
   const handleExport = useCallback(() => {
@@ -574,7 +598,7 @@ export default function CgtCalculator() {
   const handleExportAto = useCallback(() => {
     if (!summary || !matches.length) return;
 
-    const report = exportAtoReport(summary, matches, trades, selectedFy);
+    const report = exportAtoReport(summary, matches, trades, selectedFy, entityType);
     const blob = new Blob([report], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -583,7 +607,7 @@ export default function CgtCalculator() {
     a.download = `ato_report${fyLabel}.txt`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [summary, matches, trades, selectedFy]);
+  }, [summary, matches, trades, selectedFy, entityType]);
 
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -709,6 +733,36 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                   </select>
                 </div>
               )}
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="entity-type-select"
+                  className="text-sm text-neutral-400"
+                >
+                  Entity Type
+                </label>
+                <select
+                  id="entity-type-select"
+                  value={entityType}
+                  onChange={(e) => {
+                    setEntityType(e.target.value as EntityType);
+                    if (trades.length > 0) {
+                      const discountRate = getCgtDiscountRate(e.target.value as EntityType);
+                      const filtered = selectedFy
+                        ? filterTradesByFinancialYear(trades, selectedFy)
+                        : trades;
+                      const result = recalculate(filtered, strategy, lockedMatchKeys, discountRate);
+                      applyResults(result, selectedFy);
+                    }
+                  }}
+                  className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {(Object.keys(ENTITY_TYPE_LABELS) as EntityType[]).map((et) => (
+                    <option key={et} value={et}>
+                      {ENTITY_TYPE_LABELS[et]}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <button
                 onClick={handleExport}
                 disabled={!matches.length && !unmatchedSells.length}
@@ -792,63 +846,77 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
         {summary && (
           <section className="mb-8">
             <h2 className="text-lg font-semibold mb-4">CGT Summary</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <SummaryCard
-                label="Total Proceeds"
-                value={formatCurrency(summary.totalProceeds)}
-              />
-              <SummaryCard
-                label="Total Cost Base"
-                value={formatCurrency(summary.totalCostBase)}
-              />
-              <SummaryCard
-                label="Capital Gain (Before Discount)"
-                value={formatCurrency(summary.totalCapitalGain)}
-                highlight={
-                  summary.totalCapitalGain > 0
-                    ? "text-green-400"
-                    : summary.totalCapitalGain < 0
-                      ? "text-red-400"
-                      : ""
-                }
-              />
-              <SummaryCard
-                label="Taxable Capital Gain (After 50% Discount)"
-                value={formatCurrency(summary.totalDiscountedGain)}
-                highlight={
-                  summary.totalDiscountedGain > 0
-                    ? "text-green-400"
-                    : summary.totalDiscountedGain < 0
-                      ? "text-red-400"
-                      : ""
-                }
-              />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
-              <SummaryCard
-                label="Total Capital Losses"
-                value={formatCurrency(summary.totalCapitalLoss)}
-                highlight={summary.totalCapitalLoss > 0 ? "text-red-400" : ""}
-              />
-              <SummaryCard
-                label="Net Capital Gain/Loss"
-                value={formatCurrency(summary.netCapitalGain)}
-                highlight={
-                  summary.netCapitalGain > 0
-                    ? "text-green-400"
-                    : summary.netCapitalGain < 0
-                      ? "text-red-400"
-                      : ""
-                }
-              />
-              <SummaryCard
-                label="Carry Forward to Next FY"
-                value={formatCurrency(summary.carryForwardLoss)}
-                highlight={
-                  summary.carryForwardLoss > 0 ? "text-amber-400" : ""
-                }
-              />
-            </div>
+            {(() => {
+              const discountRate = getCgtDiscountRate(entityType);
+              const discountPct = Math.round(discountRate * 100);
+              const estimatedTax = calculateEstimatedTax(summary.totalDiscountedGain, entityType);
+              const taxRateLabel = getTaxRateLabel(entityType);
+              return (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <SummaryCard
+                      label="Total Proceeds"
+                      value={formatCurrency(summary.totalProceeds)}
+                    />
+                    <SummaryCard
+                      label="Total Cost Base"
+                      value={formatCurrency(summary.totalCostBase)}
+                    />
+                    <SummaryCard
+                      label="Capital Gain (Before Discount)"
+                      value={formatCurrency(summary.totalCapitalGain)}
+                      highlight={
+                        summary.totalCapitalGain > 0
+                          ? "text-green-400"
+                          : summary.totalCapitalGain < 0
+                            ? "text-red-400"
+                            : ""
+                      }
+                    />
+                    <SummaryCard
+                      label={`Taxable Capital Gain (After ${discountPct}% Discount)`}
+                      value={formatCurrency(summary.totalDiscountedGain)}
+                      highlight={
+                        summary.totalDiscountedGain > 0
+                          ? "text-green-400"
+                          : summary.totalDiscountedGain < 0
+                            ? "text-red-400"
+                            : ""
+                      }
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+                    <SummaryCard
+                      label="Total Capital Losses"
+                      value={formatCurrency(summary.totalCapitalLoss)}
+                      highlight={summary.totalCapitalLoss > 0 ? "text-red-400" : ""}
+                    />
+                    <SummaryCard
+                      label="Net Capital Gain/Loss"
+                      value={formatCurrency(summary.netCapitalGain)}
+                      highlight={
+                        summary.netCapitalGain > 0
+                          ? "text-green-400"
+                          : summary.netCapitalGain < 0
+                            ? "text-red-400"
+                            : ""
+                      }
+                    />
+                    <SummaryCard
+                      label="Carry Forward to Next FY"
+                      value={formatCurrency(summary.carryForwardLoss)}
+                      highlight={
+                        summary.carryForwardLoss > 0 ? "text-amber-400" : ""
+                      }
+                    />
+                    <SummaryCard
+                      label={`Estimated Tax Payable (${taxRateLabel})`}
+                      value={estimatedTax > 0 ? formatCurrency(estimatedTax) : "—"}
+                    />
+                  </div>
+                </>
+              );
+            })()}
             {summary.totalDiscountAmount > 0 && (
               <div className="mt-3 text-sm text-neutral-400">
                 CGT Discount saved:{" "}
@@ -856,6 +924,12 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                   {formatCurrency(summary.totalDiscountAmount)}
                 </span>{" "}
                 ({summary.matchCount} matches)
+              </div>
+            )}
+            {getActiveAssetExemptionNote(entityType) && (
+              <div className="mt-3 text-sm text-neutral-400 border border-neutral-800 rounded-lg p-3 bg-neutral-900/50">
+                <span className="text-amber-400 font-medium">Note: </span>
+                {getActiveAssetExemptionNote(entityType)}
               </div>
             )}
           </section>
@@ -894,6 +968,7 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                 onToggleLock={handleToggleLock}
                 onLockAll={handleLockAll}
                 onUnlockAll={handleUnlockAll}
+                entityType={entityType}
               />
             )}
             {activeTab === "parcels" && (
@@ -962,6 +1037,7 @@ function MatchResultsTable({
   onToggleLock,
   onLockAll,
   onUnlockAll,
+  entityType,
 }: {
   matches: Match[];
   unmatchedSells: Trade[];
@@ -969,6 +1045,7 @@ function MatchResultsTable({
   onToggleLock: (m: Match) => void;
   onLockAll: () => void;
   onUnlockAll: () => void;
+  entityType: EntityType;
 }) {
   return (
     <div>
@@ -1085,7 +1162,7 @@ function MatchResultsTable({
                     <td className="px-4 py-3 text-center">
                       {m.cgtDiscountEligible ? (
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                          50%
+                          {Math.round(getCgtDiscountRate(entityType) * 100)}%
                         </span>
                       ) : (
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-neutral-800 text-neutral-500">

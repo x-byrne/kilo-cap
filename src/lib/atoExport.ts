@@ -1,10 +1,13 @@
 import type { CgtSummary, Match, Trade } from "./types";
+import type { EntityType } from "./entityRules";
+import { getCgtDiscountRate, getTaxRateLabel } from "./entityRules";
 
 export function exportAtoReport(
   summary: CgtSummary,
   matches: Match[],
   trades: Trade[],
   fy: number | null,
+  entityType: EntityType = "individual",
 ): string {
   const lines: string[] = [];
   const pad = (n: number) => n.toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -15,6 +18,8 @@ export function exportAtoReport(
   const netCapitalGain = summary.netCapitalGain;
   const carryForwardLoss = summary.carryForwardLoss;
 
+  const discountRate = getCgtDiscountRate(entityType);
+  const discountPct = Math.round(discountRate * 100);
   const eligibleMatches = matches.filter((m) => m.cgtDiscountEligible).length;
   const nonEligibleMatches = matches.filter((m) => !m.cgtDiscountEligible).length;
 
@@ -28,9 +33,11 @@ export function exportAtoReport(
     assetBreakdown.set(m.code, entry);
   }
 
+  const taxRateLabel = getTaxRateLabel(entityType);
+
   lines.push("=".repeat(70));
-  lines.push("            INDIVIDUAL TAX RETURN - CAPITAL GAINS REPORT");
-  lines.push("            (ATO Question 18 - Capital Gains)");
+  lines.push(`            ${taxRateLabel.toUpperCase()} TAX RETURN - CAPITAL GAINS REPORT`);
+  lines.push(`            (ATO Question 18 - Capital Gains)`);
   lines.push("=".repeat(70));
   lines.push("");
   lines.push(`Financial Year:    ${fyLabel}`);
@@ -67,7 +74,7 @@ export function exportAtoReport(
   lines.push("-".repeat(70));
   lines.push("CGT DISCOUNT ELIGIBILITY SUMMARY");
   lines.push("-".repeat(70));
-  lines.push(`  Matches eligible for 50% CGT discount:     ${eligibleMatches}`);
+  lines.push(`  Matches eligible for ${discountPct}% CGT discount:     ${eligibleMatches}`);
   lines.push(`  Matches NOT eligible for CGT discount:     ${nonEligibleMatches}`);
   lines.push(`  Total matches:                             ${matches.length}`);
   lines.push("");

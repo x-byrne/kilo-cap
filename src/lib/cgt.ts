@@ -260,14 +260,18 @@ export function sortParcelsByStrategy(
 export function matchTrades(
   trades: Trade[],
   strategy: MatchStrategy,
+  discountRate = 0.5,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   if (strategy === "manual") {
-    return matchManual(trades);
+    return matchManual(trades, discountRate);
   }
-  return matchAutomatic(trades, strategy);
+  return matchAutomatic(trades, strategy, discountRate);
 }
 
-function matchManual(trades: Trade[]): {
+function matchManual(
+  trades: Trade[],
+  discountRate = 0.5,
+): {
   matches: Match[];
   unmatchedSells: Trade[];
   remainingParcels: Parcel[];
@@ -317,7 +321,7 @@ function matchManual(trades: Trade[]): {
         const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
         const eligible = isCgtDiscountEligible(buy.date, sell.date);
         const discountedGain =
-          eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
+          eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
         matches.push({
           sellTradeId: sell.tradeId,
@@ -363,6 +367,7 @@ function matchManual(trades: Trade[]): {
 function matchAutomatic(
   trades: Trade[],
   strategy: MatchStrategy,
+  discountRate = 0.5,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   const parcels = tradesToParcels(trades);
   const sells = trades
@@ -419,7 +424,7 @@ function matchAutomatic(
       const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
       const discountedGain =
-        eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
+        eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
       matches.push({
         sellTradeId: sell.tradeId,
