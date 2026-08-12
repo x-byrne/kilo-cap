@@ -48,6 +48,14 @@ export function parseCsv(csv: string): Trade[] {
     const brokerage = parseFloat(values[brokerageIdx] || "0");
     const total = parseFloat(values[totalIdx] || "0");
 
+    validateTradeRow(
+      i + 1,
+      values[dateIdx]?.trim() || "",
+      units,
+      price,
+      brokerage,
+    );
+
     trades.push({
       tradeId: values[tradeIdIdx]?.trim() || `T${i}`,
       matchId: values[matchIdIdx]?.trim() || "",
@@ -62,6 +70,60 @@ export function parseCsv(csv: string): Trade[] {
   }
 
   return trades;
+}
+
+function validateTradeRow(
+  lineNum: number,
+  date: string,
+  units: number,
+  price: number,
+  brokerage: number,
+): void {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(
+      `Row ${lineNum}: Invalid date "${date}" — expected YYYY-MM-DD`,
+    );
+  }
+  const d = new Date(date);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Row ${lineNum}: Invalid date "${date}"`);
+  }
+
+  if (Number.isNaN(units)) {
+    throw new Error(
+      `Row ${lineNum}: Units must be a valid number, got "${units}"`,
+    );
+  }
+
+  if (units <= 0) {
+    throw new Error(
+      `Row ${lineNum}: Units must be a positive number, got "${units}"`,
+    );
+  }
+
+  if (Number.isNaN(price)) {
+    throw new Error(
+      `Row ${lineNum}: Price must be a valid number, got "${price}"`,
+    );
+  }
+
+  if (price <= 0) {
+    throw new Error(
+      `Row ${lineNum}: Price must be a positive number, got "${price}"`,
+    );
+  }
+
+  if (Number.isNaN(brokerage)) {
+    throw new Error(
+      `Row ${lineNum}: Brokerage must be a valid number, got "${brokerage}"`,
+    );
+  }
+
+  if (brokerage < 0) {
+    throw new Error(
+      `Row ${lineNum}: Brokerage must be non-negative, got "${brokerage}"`,
+    );
+  }
 }
 
 function parseCsvLine(line: string): string[] {
@@ -100,6 +162,33 @@ export function tradesToParcels(trades: Trade[]): Parcel[] {
         totalCostBase: t.units * t.price + t.brokerage,
       };
     });
+}
+
+export function getHeldDays(buyDate: string, sellDate: string): number {
+  return Math.round(
+    (new Date(sellDate).getTime() - new Date(buyDate).getTime()) / MS_PER_DAY,
+  );
+}
+
+export type BrokerFormat = "commsec" | "selfwealth" | "stake" | "tradezero" | "unknown";
+
+export function detectBrokerFormat(csvText: string): BrokerFormat {
+  const firstLine = csvText.trim().split("\n")[0]?.toLowerCase() ?? "";
+  const cols = firstLine.split(",").map((c) => c.trim());
+
+  if (cols.some((c) => c === "activity" || c === "contract note" || c === "trade date")) {
+    return "commsec";
+  }
+  if (cols.some((c) => c === "ticker")) {
+    return "selfwealth";
+  }
+  if (cols.some((c) => c === "instrument" || c === "fee")) {
+    return "stake";
+  }
+  if (cols.some((c) => c === "time")) {
+    return "tradezero";
+  }
+  return "unknown";
 }
 
 export function isCgtDiscountEligible(
@@ -356,13 +445,17 @@ function matchAutomatic(
   return { matches, unmatchedSells, remainingParcels };
 }
 
-export function calculateCgtSummary(matches: Match[]): CgtSummary {
+export function calculateCgtSummary(result: {
+  matches: Match[];
+  unmatchedSells: Trade[];
+  remainingParcels: Parcel[];
+}): CgtSummary {
   let totalProceeds = 0;
   let totalCostBase = 0;
   let totalCapitalGain = 0;
   let totalDiscountedGain = 0;
 
-  for (const m of matches) {
+  for (const m of result.matches) {
     totalProceeds += m.sellProceeds;
     totalCostBase += m.buyCostBase;
     totalCapitalGain += m.capitalGain;
@@ -377,9 +470,9 @@ export function calculateCgtSummary(matches: Match[]): CgtSummary {
     totalCapitalGain,
     totalDiscountedGain,
     totalDiscountAmount,
-    matchCount: matches.length,
-    unmatchedSells: [],
-    remainingParcels: [],
+    matchCount: result.matches.length,
+    unmatchedSells: result.unmatchedSells,
+    remainingParcels: result.remainingParcels,
   };
 }
 
@@ -437,7 +530,7 @@ export function filterTradesByFinancialYear(
 ): Trade[] {
   const { start, end } = getFinancialYearRange(fy);
   const startTime = new Date(start).getTime();
-  const endTime = new Date(end).getTime() + 86400000; // inclusive end of day
+  const endTime = new Date(end).getTime() + MS_PER_DAY; // inclusive end of day
 
   return trades.map((t) => t).filter((t) => {
     if (t.action === "Sell") {
