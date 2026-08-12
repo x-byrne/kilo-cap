@@ -10,12 +10,10 @@ export function exportAtoReport(
   const pad = (n: number) => n.toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fyLabel = fy !== null ? getFinancialYearLabel(fy) : "All Financial Years";
 
-  const totalCapitalLoss = matches
-    .filter((m) => m.capitalGain < 0)
-    .reduce((sum, m) => sum + Math.abs(m.capitalGain), 0);
+  const totalCapitalLoss = summary.totalCapitalLoss;
 
-  const netCapitalGain = summary.totalCapitalGain - totalCapitalLoss;
-  const carryForwardLoss = netCapitalGain < 0 ? Math.abs(netCapitalGain) : 0;
+  const netCapitalGain = summary.netCapitalGain;
+  const carryForwardLoss = summary.carryForwardLoss;
 
   const eligibleMatches = matches.filter((m) => m.cgtDiscountEligible).length;
   const nonEligibleMatches = matches.filter((m) => !m.cgtDiscountEligible).length;

@@ -65,8 +65,10 @@ function buildMatchFromKey(
   const buyCostBase =
     buy.price * units + (units / buy.units) * buy.brokerage;
   const capitalGain = netProceeds - buyCostBase;
+  const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
   const eligible = isCgtDiscountEligible(buy.date, sell.date);
-  const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+  const discountedGain =
+    eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
   return {
     sellTradeId: sell.tradeId,
@@ -78,6 +80,7 @@ function buildMatchFromKey(
     sellProceeds: netProceeds,
     buyCostBase,
     capitalGain,
+    capitalLoss,
     cgtDiscountEligible: eligible,
     discountedGain,
   };
@@ -236,8 +239,10 @@ function matchManualWithLocked(
           buy.price * matchedUnits +
           (matchedUnits / buy.units) * buy.brokerage;
         const capitalGain = netProceeds - buyCostBase;
+        const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
         const eligible = isCgtDiscountEligible(buy.date, sell.date);
-        const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+        const discountedGain =
+          eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
         matches.push({
           sellTradeId: sell.tradeId,
@@ -249,6 +254,7 @@ function matchManualWithLocked(
           sellProceeds: netProceeds,
           buyCostBase,
           capitalGain,
+          capitalLoss,
           cgtDiscountEligible: eligible,
           discountedGain,
         });
@@ -330,8 +336,10 @@ function matchAutomaticWithAvailable(
       const buyCostBase =
         (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
       const capitalGain = netProceeds - buyCostBase;
+      const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
-      const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+      const discountedGain =
+        eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
       matches.push({
         sellTradeId: sell.tradeId,
@@ -343,6 +351,7 @@ function matchAutomaticWithAvailable(
         sellProceeds: netProceeds,
         buyCostBase,
         capitalGain,
+        capitalLoss,
         cgtDiscountEligible: eligible,
         discountedGain,
       });
@@ -380,6 +389,9 @@ export default function CgtCalculator() {
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [financialYears, setFinancialYears] = useState<number[]>([]);
   const [brokerFormat, setBrokerFormat] = useState<string>("unknown");
+  const [lossCarryForwardHistory, setLossCarryForwardHistory] = useState<
+    { fy: number; amount: number }[]
+  >([]);
 
   const applyResults = useCallback(
     (
@@ -388,11 +400,26 @@ export default function CgtCalculator() {
         unmatchedSells: Trade[];
         remainingParcels: Parcel[];
       },
+      fy: number | null,
     ) => {
       setMatches(result.matches);
       setUnmatchedSells(result.unmatchedSells);
       setRemainingParcels(result.remainingParcels);
-      setSummary(calculateCgtSummary(result));
+      const newSummary = calculateCgtSummary(result);
+      setSummary(newSummary);
+      if (newSummary.carryForwardLoss > 0 && fy !== null) {
+        setLossCarryForwardHistory(
+          (prev: { fy: number; amount: number }[]) => {
+            const existing = prev.find((h: { fy: number; amount: number }) => h.fy === fy);
+            if (existing) {
+              return prev.map((h: { fy: number; amount: number }) =>
+                h.fy === fy ? { ...h, amount: newSummary.carryForwardLoss } : h,
+              );
+            }
+            return [...prev, { fy, amount: newSummary.carryForwardLoss }];
+          },
+        );
+      }
     },
     [],
   );
@@ -413,7 +440,7 @@ export default function CgtCalculator() {
       setSelectedFy(fy);
       const filtered = fy ? filterTradesByFinancialYear(parsed, fy) : parsed;
       const result = recalculate(filtered, strategy, lockedMatchKeys);
-      applyResults(result);
+      applyResults(result, fy);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to parse CSV");
     }
@@ -424,16 +451,16 @@ export default function CgtCalculator() {
       setStrategy(newStrategy);
       if (trades.length > 0) {
         const result = recalculate(trades, newStrategy, lockedMatchKeys);
-        applyResults(result);
+        applyResults(result, selectedFy);
       }
     },
-    [trades, lockedMatchKeys, applyResults],
+    [trades, lockedMatchKeys, applyResults, selectedFy],
   );
 
   const handleToggleLock = useCallback(
     (m: Match) => {
       const key = matchKey(m);
-      const next = new Set(lockedMatchKeys);
+      const next = new Set<string>(lockedMatchKeys);
       if (next.has(key)) {
         next.delete(key);
       } else {
@@ -442,10 +469,10 @@ export default function CgtCalculator() {
       setLockedMatchKeys(next);
       if (trades.length > 0) {
         const result = recalculate(trades, strategy, next);
-        applyResults(result);
+        applyResults(result, selectedFy);
       }
     },
-    [lockedMatchKeys, trades, strategy, applyResults],
+    [lockedMatchKeys, trades, strategy, applyResults, selectedFy],
   );
 
   const handleLockAll = useCallback(() => {
@@ -462,8 +489,8 @@ export default function CgtCalculator() {
       const filtered = selectedFy
         ? filterTradesByFinancialYear(trades, selectedFy)
         : trades;
-      const result = recalculate(filtered, strategy, new Set());
-      applyResults(result);
+      const result = recalculate(filtered, strategy, new Set<string>());
+      applyResults(result, selectedFy);
     }
   }, [trades, strategy, selectedFy, applyResults]);
 
@@ -475,7 +502,7 @@ export default function CgtCalculator() {
           ? filterTradesByFinancialYear(trades, fy)
           : trades;
         const result = recalculate(filtered, strategy, lockedMatchKeys);
-        applyResults(result);
+        applyResults(result, fy);
       }
     },
     [trades, strategy, lockedMatchKeys, applyResults],
@@ -794,6 +821,31 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                 }
               />
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
+              <SummaryCard
+                label="Total Capital Losses"
+                value={formatCurrency(summary.totalCapitalLoss)}
+                highlight={summary.totalCapitalLoss > 0 ? "text-red-400" : ""}
+              />
+              <SummaryCard
+                label="Net Capital Gain/Loss"
+                value={formatCurrency(summary.netCapitalGain)}
+                highlight={
+                  summary.netCapitalGain > 0
+                    ? "text-green-400"
+                    : summary.netCapitalGain < 0
+                      ? "text-red-400"
+                      : ""
+                }
+              />
+              <SummaryCard
+                label="Carry Forward to Next FY"
+                value={formatCurrency(summary.carryForwardLoss)}
+                highlight={
+                  summary.carryForwardLoss > 0 ? "text-amber-400" : ""
+                }
+              />
+            </div>
             {summary.totalDiscountAmount > 0 && (
               <div className="mt-3 text-sm text-neutral-400">
                 CGT Discount saved:{" "}
@@ -857,6 +909,19 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                 }
               />
             )}
+          </section>
+        )}
+
+        {/* Loss Carry-Forward History */}
+        {lossCarryForwardHistory.length > 0 && (
+          <section className="mt-8">
+            <h2 className="text-lg font-semibold mb-4">
+              Capital Loss Carry-Forward History
+            </h2>
+            <LossCarryForwardTable
+              entries={lossCarryForwardHistory}
+              getFinancialYearLabel={getFinancialYearLabel}
+            />
           </section>
         )}
       </main>
@@ -1226,6 +1291,50 @@ function TradesTable({ trades }: { trades: Trade[] }) {
               </td>
               <td className="px-4 py-3 text-right font-mono">
                 {formatCurrency(t.total)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LossCarryForwardTable({
+  entries,
+  getFinancialYearLabel,
+}: {
+  entries: { fy: number; amount: number }[];
+  getFinancialYearLabel: (fy: number) => string;
+}) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-amber-500/30 bg-amber-500/5">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-neutral-900 text-neutral-400 text-left">
+            <th className="px-4 py-3 font-medium">Financial Year</th>
+            <th className="px-4 py-3 font-medium text-right">
+              Carry-Forward Amount
+            </th>
+            <th className="px-4 py-3 font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-800">
+          {entries.map((entry, i) => (
+            <tr
+              key={`${entry.fy}-${i}`}
+              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
+            >
+              <td className="px-4 py-3">
+                {getFinancialYearLabel(entry.fy)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-amber-400">
+                {formatCurrency(entry.amount)}
+              </td>
+              <td className="px-4 py-3">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  Carried Forward
+                </span>
               </td>
             </tr>
           ))}
