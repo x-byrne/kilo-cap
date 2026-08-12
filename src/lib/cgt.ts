@@ -178,7 +178,7 @@ export function matchTrades(
   return matchAutomatic(trades, strategy);
 }
 
-function matchManual(trades: Trade[]): {
+export function matchManual(trades: Trade[]): {
   matches: Match[];
   unmatchedSells: Trade[];
   remainingParcels: Parcel[];
@@ -268,7 +268,7 @@ function matchManual(trades: Trade[]): {
   return { matches, unmatchedSells, remainingParcels };
 }
 
-function matchAutomatic(
+export function matchAutomatic(
   trades: Trade[],
   strategy: MatchStrategy,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
@@ -380,6 +380,51 @@ export function calculateCgtSummary(matches: Match[]): CgtSummary {
     matchCount: matches.length,
     unmatchedSells: [],
     remainingParcels: [],
+  };
+}
+
+export interface LossOffsets {
+  totalProceeds: number;
+  totalCostBase: number;
+  totalCapitalGain: number;
+  totalDiscountedGain: number;
+  totalDiscountAmount: number;
+  totalCapitalLosses: number;
+  netCapitalGain: number;
+  matchCount: number;
+}
+
+export function calculateLossOffsets(matches: Match[]): LossOffsets {
+  let totalProceeds = 0;
+  let totalCostBase = 0;
+  let totalCapitalGain = 0;
+  let totalDiscountedGain = 0;
+  let totalCapitalLosses = 0;
+
+  for (const m of matches) {
+    totalProceeds += m.sellProceeds;
+    totalCostBase += m.buyCostBase;
+    if (m.capitalGain > 0) {
+      totalCapitalGain += m.capitalGain;
+      totalDiscountedGain += m.discountedGain;
+    }
+    if (m.capitalGain < 0) {
+      totalCapitalLosses += Math.abs(m.capitalGain);
+    }
+  }
+
+  const totalDiscountAmount = totalCapitalGain - totalDiscountedGain;
+  const netCapitalGain = totalCapitalGain - totalCapitalLosses;
+
+  return {
+    totalProceeds,
+    totalCostBase,
+    totalCapitalGain,
+    totalDiscountedGain,
+    totalDiscountAmount,
+    totalCapitalLosses,
+    netCapitalGain,
+    matchCount: matches.length,
   };
 }
 
