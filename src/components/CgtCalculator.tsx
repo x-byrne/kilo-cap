@@ -22,6 +22,8 @@ import {
   getFinancialYear,
   getFinancialYearLabel,
   filterTradesByFinancialYear,
+  getHeldDays,
+  detectBrokerFormat,
 } from "@/lib/cgt";
 
 const SAMPLE_CSV = `trade_id,match_id,date,action,code,units,price,brokerage,total
@@ -376,6 +378,7 @@ export default function CgtCalculator() {
   );
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [financialYears, setFinancialYears] = useState<number[]>([]);
+  const [brokerFormat, setBrokerFormat] = useState<string>("unknown");
 
   const applyResults = useCallback(
     (
@@ -388,7 +391,7 @@ export default function CgtCalculator() {
       setMatches(result.matches);
       setUnmatchedSells(result.unmatchedSells);
       setRemainingParcels(result.remainingParcels);
-      setSummary(calculateCgtSummary(result.matches));
+      setSummary(calculateCgtSummary(result));
     },
     [],
   );
@@ -402,6 +405,7 @@ export default function CgtCalculator() {
         return;
       }
       setTrades(parsed);
+      setBrokerFormat(detectBrokerFormat(csvText));
       const years = getTradeFinancialYears(parsed);
       setFinancialYears(years);
       const fy = years.length > 0 ? years[0] : null;
@@ -484,10 +488,7 @@ export default function CgtCalculator() {
     const rows: string[] = [];
 
     for (const m of matches) {
-      const heldDays = Math.round(
-        (new Date(m.sellDate).getTime() - new Date(m.buyDate).getTime()) /
-          86400000,
-      );
+      const heldDays = getHeldDays(m.buyDate, m.sellDate);
       rows.push(
         [
           m.sellTradeId,
@@ -622,6 +623,11 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
             {trades.length > 0 && !error && (
               <span className="text-sm text-neutral-400">
                 {trades.length} trades loaded
+              </span>
+            )}
+            {brokerFormat !== "unknown" && (
+              <span className="text-xs text-neutral-500 border border-neutral-700 rounded px-2 py-0.5">
+                Format: {brokerFormat}
               </span>
             )}
           </div>
@@ -912,11 +918,7 @@ function MatchResultsTable({
               {matches.map((m, i) => {
                 const key = matchKey(m);
                 const locked = lockedMatchKeys.has(key);
-                const heldDays = Math.round(
-                  (new Date(m.sellDate).getTime() -
-                    new Date(m.buyDate).getTime()) /
-                    (1000 * 60 * 60 * 24),
-                );
+                const heldDays = getHeldDays(m.buyDate, m.sellDate);
                 return (
                   <tr
                     key={`${key}-${i}`}
