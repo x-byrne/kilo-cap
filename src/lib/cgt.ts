@@ -593,3 +593,185 @@ export const STRATEGY_DESCRIPTIONS: Record<MatchStrategy, string> = {
   manual:
     "Use match_id column from CSV to define which buys match which sells.",
 };
+
+export function matchKey(m: Match): string {
+  return `${m.buyTradeId}-${m.sellTradeId}-${m.units}`;
+}
+
+export function matchAutomaticWithAvailable(
+  sells: Trade[],
+  parcels: Parcel[],
+  strategy: MatchStrategy,
+): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
+  const matches: Match[] = [];
+  const unmatchedSells: Trade[] = [];
+
+  const parcelsByCode = new Map<string, Parcel[]>();
+  for (const p of parcels) {
+    const group = parcelsByCode.get(p.code) || [];
+    group.push(p);
+    parcelsByCode.set(p.code, group);
+  }
+
+  for (const sell of sells) {
+    const codeParcels = parcelsByCode.get(sell.code) || [];
+    const validParcels = codeParcels.filter(
+      (p) =>
+        p.unitsRemaining > 0 &&
+        new Date(p.date).getTime() <= new Date(sell.date).getTime(),
+    );
+
+    if (validParcels.length === 0) {
+      unmatchedSells.push(sell);
+      continue;
+    }
+
+    const sortedParcels = sortParcelsByStrategy(validParcels, strategy);
+    let remainingSellUnits = sell.units;
+
+    for (const parcel of sortedParcels) {
+      if (remainingSellUnits <= 0) break;
+
+      const matchedUnits = Math.min(remainingSellUnits, parcel.unitsRemaining);
+      parcel.unitsRemaining -= matchedUnits;
+      remainingSellUnits -= matchedUnits;
+
+      const sellBrokeragePortion =
+        (matchedUnits / sell.units) * sell.brokerage;
+      const netProceeds = sell.price * matchedUnits - sellBrokeragePortion;
+      const buyCostBase =
+        (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
+      const capitalGain = netProceeds - buyCostBase;
+      const eligible = isCgtDiscountEligible(parcel.date, sell.date);
+      const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+
+      matches.push({
+        sellTradeId: sell.tradeId,
+        buyTradeId: parcel.tradeId,
+        code: sell.code,
+        units: matchedUnits,
+        sellDate: sell.date,
+        buyDate: parcel.date,
+        sellProceeds: netProceeds,
+        buyCostBase,
+        capitalGain,
+        cgtDiscountEligible: eligible,
+        discountedGain,
+      });
+    }
+
+    if (remainingSellUnits > 0) {
+      unmatchedSells.push({
+        ...sell,
+        units: remainingSellUnits,
+        total: sell.price * remainingSellUnits,
+      });
+    }
+  }
+
+  const remainingParcels = parcels.filter((p) => p.unitsRemaining > 0);
+
+  return { matches, unmatchedSells, remainingParcels };
+}
+
+export function matchManualWithLocked(
+  trades: Trade[],
+  lockedMatchKeys: Set<string>,
+): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
+  const lockedBuyIds = new Set<string>();
+  const lockedSellIds = new Set<string>();
+  const lockedBuyUnits = new Map<string, number>();
+  const lockedSellUnits = new Map<string, number>();
+
+  for (const key of lockedMatchKeys) {
+    const parts = key.split("-");
+    const units = parseInt(parts[parts.length - 1], 10);
+    const sellId = parts[parts.length - 2];
+    const buyId = parts.slice(0, parts.length - 2).join("-");
+    lockedBuyIds.add(buyId);
+    lockedSellIds.add(sellId);
+    lockedBuyUnits.set(buyId, (lockedBuyUnits.get(buyId) || 0) + units);
+    lockedSellUnits.set(sellId, (lockedSellUnits.get(sellId) || 0) + units);
+  }
+
+  const matchGroups = new Map<string, Trade[]>();
+  for (const trade of trades) {
+    if (!trade.matchId) continue;
+    if (trade.action === "Buy" && lockedBuyIds.has(trade.tradeId)) continue;
+    if (trade.action === "Sell" && lockedSellIds.has(trade.tradeId)) continue;
+    const group = matchGroups.get(trade.matchId) || [];
+    group.push(trade);
+    matchGroups.set(trade.matchId, group);
+  }
+
+  const matches: Match[] = [];
+  const usedBuyIds = new Set<string>();
+  const unmatchedSells: Trade[] = [];
+
+  for (const [, group] of matchGroups) {
+    const buys = group.filter((t) => t.action === "Buy");
+    const sells = group.filter((t) => t.action === "Sell");
+
+    for (const sell of sells) {
+      let remainingSellUnits = sell.units;
+
+      for (const buy of buys) {
+        if (remainingSellUnits <= 0) break;
+        usedBuyIds.add(buy.tradeId);
+
+        const matchedUnits = Math.min(remainingSellUnits, buy.units);
+        remainingSellUnits -= matchedUnits;
+
+        const netProceeds =
+          sell.price * matchedUnits -
+          (matchedUnits / sell.units) * sell.brokerage;
+        const buyCostBase =
+          buy.price * matchedUnits +
+          (matchedUnits / buy.units) * buy.brokerage;
+        const capitalGain = netProceeds - buyCostBase;
+        const eligible = isCgtDiscountEligible(buy.date, sell.date);
+        const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+
+        matches.push({
+          sellTradeId: sell.tradeId,
+          buyTradeId: buy.tradeId,
+          code: sell.code,
+          units: matchedUnits,
+          sellDate: sell.date,
+          buyDate: buy.date,
+          sellProceeds: netProceeds,
+          buyCostBase,
+          capitalGain,
+          cgtDiscountEligible: eligible,
+          discountedGain,
+        });
+      }
+
+      if (remainingSellUnits > 0) {
+        unmatchedSells.push({ ...sell, units: remainingSellUnits });
+      }
+    }
+  }
+
+  const unmatchedSellsList: Trade[] = [];
+  for (const t of trades) {
+    if (
+      t.action === "Sell" &&
+      !t.matchId &&
+      !lockedSellIds.has(t.tradeId)
+    ) {
+      unmatchedSellsList.push(t);
+    }
+  }
+
+  const remainingParcels = tradesToParcels(
+    trades.filter(
+      (t) =>
+        t.action === "Buy" &&
+        !usedBuyIds.has(t.tradeId) &&
+        !lockedBuyIds.has(t.tradeId),
+    ),
+  );
+
+  return { matches, unmatchedSells: [...unmatchedSells, ...unmatchedSellsList], remainingParcels };
+}
