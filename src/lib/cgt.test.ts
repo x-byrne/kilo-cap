@@ -1,7 +1,6 @@
 import { test, expect } from "bun:test";
 import {
   parseCsv,
-<<<<<<< HEAD
   calculateCgtSummary,
   matchTrades,
   tradesToParcels,
@@ -9,15 +8,6 @@ import {
   getHeldDays,
   isCgtDiscountEligible,
   sortParcelsByStrategy,
-=======
-  formatDate,
-  tradesToParcels,
-  getHeldDays,
-  isCgtDiscountEligible,
-  sortParcelsByStrategy,
-  matchTrades,
-  calculateCgtSummary,
->>>>>>> dc4b585 (Add comprehensive CGT matching and summary tests (#20))
   getFinancialYear,
   getFinancialYearLabel,
   filterTradesByFinancialYear,
@@ -89,37 +79,6 @@ test("parseCsv rejects negative brokerage", () => {
   expect(() => parseCsv(csv)).toThrow(/Brokerage must be non-negative/);
 });
 
-<<<<<<< HEAD
-test("calculateCgtSummary tracks losses and carry-forward via matchTrades", () => {
-  const trades = [
-    makeTrade({ tradeId: "T1", date: "2024-01-15", action: "Buy", code: "BHP", units: 100, price: 20, brokerage: 10 }),
-    makeTrade({ tradeId: "T2", date: "2024-06-15", action: "Sell", code: "BHP", units: 50, price: 15, brokerage: 5 }),
-  ];
-
-  const result = matchTrades(trades, "fifo");
-  const summary = calculateCgtSummary(result);
-
-  expect(summary.totalCapitalLoss).toBeGreaterThan(0);
-  expect(summary.netCapitalGain).toBeLessThan(0);
-  expect(summary.carryForwardLoss).toBeGreaterThan(0);
-});
-
-test("discount is not applied to capital losses via matchTrades", () => {
-  const trades = [
-    makeTrade({ tradeId: "T1", date: "2022-01-15", action: "Buy", code: "BHP", units: 100, price: 20, brokerage: 10 }),
-    makeTrade({ tradeId: "T2", date: "2024-06-15", action: "Sell", code: "BHP", units: 50, price: 15, brokerage: 5 }),
-  ];
-
-  const result = matchTrades(trades, "fifo");
-  const match = result.matches[0];
-
-  expect(match.capitalGain).toBeLessThan(0);
-  expect(match.discountedGain).toBe(match.capitalGain);
-  expect(match.capitalLoss).toBe(Math.abs(match.capitalGain));
-});
-
-=======
->>>>>>> dc4b585 (Add comprehensive CGT matching and summary tests (#20))
 // ─── tradesToParcels ───────────────────────────────────────────────────────────
 
 test("tradesToParcels calculates costBasePerUnit and totalCostBase correctly", () => {

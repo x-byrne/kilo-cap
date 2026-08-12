@@ -26,7 +26,6 @@ const MatchResultsTable = memo(function MatchResultsTable({
     sellProceeds: number;
     buyCostBase: number;
     capitalGain: number;
-    capitalLoss: number;
     cgtDiscountEligible: boolean;
     discountedGain: number;
   }[];
@@ -42,7 +41,6 @@ const MatchResultsTable = memo(function MatchResultsTable({
     sellProceeds: number;
     buyCostBase: number;
     capitalGain: number;
-    capitalLoss: number;
     cgtDiscountEligible: boolean;
     discountedGain: number;
   }) => void;
