@@ -26,6 +26,10 @@
 - [x] Updated all memory bank files
 - [x] TypeScript type check passes
 - [x] ESLint passes
+- [x] CI workflow (`.github/workflows/ci.yml`): added `bun install --frozen-lockfile` to every job; build step uses `bun run build`
+- [x] CSV input validation hardened: `Number.isNaN()` checks for units/price/brokerage in `validateTradeRow` (`src/lib/cgt.ts`)
+- [x] Added `src/lib/cgt.test.ts` unit tests (parseCsv NaN + edge cases); added `@types/bun`
+- [x] PR #12 CI now green (build, lint, test, typecheck all pass)
 
 ## Current Structure
 
