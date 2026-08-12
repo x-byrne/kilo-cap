@@ -11,9 +11,11 @@ import type {
 import {
   parseCsv,
   calculateCgtSummary,
+  calculateLossOffsets,
   detectBrokerFormat,
   filterTradesByFinancialYear,
   getFinancialYear,
+  getFinancialYearLabel,
   getTradeFinancialYears,
   matchKey,
   matchAutomaticWithAvailable,
@@ -21,7 +23,9 @@ import {
   getHeldDays,
   isCgtDiscountEligible,
   tradesToParcels,
+  STRATEGY_LABELS,
 } from "@/lib/cgt";
+import { exportAtoCsv, type CarriedLosses } from "@/lib/export";
 import CsvInput from "./CsvInput";
 import StrategySelector from "./StrategySelector";
 import SummaryCards from "./SummaryCards";
@@ -151,7 +155,20 @@ export default function CgtCalculator() {
     [trades, strategy, lockedMatchKeys, applyResults],
   );
 
-  const handleExport = useCallback(() => {
+  const downloadCsv = useCallback(
+    (csvContent: string, filename: string) => {
+      const blob = new Blob([csvContent], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    [],
+  );
+
+  const handleExportStandard = useCallback(() => {
     if (!matches.length && !unmatchedSells.length) return;
 
     const header =
@@ -200,15 +217,30 @@ export default function CgtCalculator() {
     }
 
     const csv = [header, ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
     const fyLabel = selectedFy ? `_FY${selectedFy}` : "_all";
-    a.href = url;
-    a.download = `cgt_report${fyLabel}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [matches, unmatchedSells, selectedFy]);
+    downloadCsv(csv, `cgt_report_standard${fyLabel}.csv`);
+  }, [matches, unmatchedSells, selectedFy, downloadCsv]);
+
+  const handleExportAto = useCallback(() => {
+    if (!matches.length && !unmatchedSells.length) return;
+
+    const lossOffsets = calculateLossOffsets(matches);
+    const carriedLosses: CarriedLosses = {
+      totalCapitalLosses: lossOffsets.totalCapitalLosses,
+      lossesAppliedThisFy: lossOffsets.netCapitalGain < 0
+        ? lossOffsets.totalCapitalLosses - Math.abs(lossOffsets.netCapitalGain)
+        : lossOffsets.totalCapitalLosses,
+      carriedForward: lossOffsets.netCapitalGain < 0
+        ? Math.abs(lossOffsets.netCapitalGain)
+        : 0,
+    };
+
+    const fyLabel = selectedFy ? `_FY${selectedFy}` : "_all";
+    const strategyLabel =
+      STRATEGY_LABELS[strategy] || strategy;
+    const csv = exportAtoCsv(matches, unmatchedSells, carriedLosses, strategyLabel, selectedFy);
+    downloadCsv(csv, `cgt_report_ato${fyLabel}.csv`);
+  }, [matches, unmatchedSells, selectedFy, strategy, downloadCsv]);
 
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -268,7 +300,8 @@ T004,M003,2021-02-15,Buy,LRSOC,194444,0.053631,9.5,10437.68`);
               financialYears={financialYears}
               selectedFy={selectedFy}
               onFyChange={handleFyChange}
-              onExport={handleExport}
+              onExportStandard={handleExportStandard}
+              onExportAto={handleExportAto}
               hasResults={matches.length > 0 || unmatchedSells.length > 0}
             />
 
