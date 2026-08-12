@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import {
   parseCsv,
+  formatDate,
   tradesToParcels,
   getHeldDays,
   isCgtDiscountEligible,
@@ -388,4 +389,53 @@ test("manual matching ignores trades without match_id", () => {
   expect(result.matches).toHaveLength(1);
   expect(result.unmatchedSells).toHaveLength(1);
   expect(result.unmatchedSells[0].tradeId).toBe("S2");
+});
+
+// ─── parseCsvLine escaped quotes ────────────────────────────────────────────────
+
+test("parseCsvLine handles escaped double-quotes inside quoted fields", () => {
+  const csv = `${HEADER}\nT1,2024-01-15,Buy,"BHP ""Big Company""",100,20.00,10.00,2010.00,`;
+  const trades = parseCsv(csv);
+  expect(trades).toHaveLength(1);
+  expect(trades[0].code).toBe('BHP "Big Company"');
+});
+
+test("parseCsv handles quoted headers with commas", () => {
+  const header = 'trade_id,date,action,"code,name",units,price,brokerage,total,match_id';
+  const csv = `${header}\nT1,2024-01-15,Buy,BHP,100,20.00,10.00,2010.00,`;
+  const trades = parseCsv(csv);
+  expect(trades).toHaveLength(1);
+  expect(trades[0].tradeId).toBe("T1");
+  expect(trades[0].date).toBe("2024-01-15");
+  expect(trades[0].action).toBe("Buy");
+});
+
+// ─── total column fallback with 0 ──────────────────────────────────────────────
+
+test("parseCsv preserves total of 0 instead of recalculating", () => {
+  const csv = `${HEADER}\nT1,2024-01-15,Buy,BHP,100,20.00,10.00,0.00,`;
+  const trades = parseCsv(csv);
+  expect(trades).toHaveLength(1);
+  expect(trades[0].total).toBe(0);
+});
+
+// ─── formatDate with invalid input ─────────────────────────────────────────────
+
+test("formatDate returns raw string for invalid date input", () => {
+  expect(formatDate("not-a-date")).toBe("not-a-date");
+  expect(formatDate("")).toBe("");
+});
+
+// ─── future date validation ────────────────────────────────────────────────────
+
+test("parseCsv rejects future sell dates", () => {
+  const futureDate = "2030-01-01";
+  const csv = `${HEADER}\nT1,${futureDate},Sell,BHP,100,20.00,10.00,2010.00,`;
+  expect(() => parseCsv(csv)).toThrow(/cannot be in the future/);
+});
+
+test("parseCsv rejects future buy dates", () => {
+  const futureDate = "2030-01-01";
+  const csv = `${HEADER}\nT1,${futureDate},Buy,BHP,100,20.00,10.00,2010.00,`;
+  expect(() => parseCsv(csv)).toThrow(/cannot be in the future/);
 });
