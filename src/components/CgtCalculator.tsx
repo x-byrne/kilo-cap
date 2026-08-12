@@ -407,9 +407,12 @@ export default function CgtCalculator() {
       setRemainingParcels(result.remainingParcels);
       const newSummary = calculateCgtSummary(result);
       setSummary(newSummary);
-      if (newSummary.carryForwardLoss > 0 && fy !== null) {
+      if (fy !== null) {
         setLossCarryForwardHistory(
           (prev: { fy: number; amount: number }[]) => {
+            if (newSummary.carryForwardLoss <= 0) {
+              return prev.filter((h: { fy: number; amount: number }) => h.fy !== fy);
+            }
             const existing = prev.find((h: { fy: number; amount: number }) => h.fy === fy);
             if (existing) {
               return prev.map((h: { fy: number; amount: number }) =>

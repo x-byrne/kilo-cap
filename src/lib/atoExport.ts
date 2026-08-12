@@ -43,6 +43,7 @@ export function exportAtoReport(
   lines.push(`  Total Cost Base:                     $${pad(summary.totalCostBase)}`);
   lines.push(`  Gross Capital Gain:                  $${pad(summary.totalCapitalGain)}`);
   lines.push(`  Total Capital Losses:                $${pad(totalCapitalLoss)}`);
+  lines.push(`  Net Capital Gain/Loss (before discount): $${pad(netCapitalGain)}`);
   lines.push(`  Total CGT Discount:                  $${pad(summary.totalDiscountAmount)}`);
   lines.push(`  Net Capital Gain (after discount):   $${pad(summary.totalDiscountedGain)}`);
   lines.push("");
