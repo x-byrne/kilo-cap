@@ -7,6 +7,7 @@ export type MatchStrategy =
   | "max-taxable-income"
   | "min-cost-base"
   | "max-cost-base"
+  | "indexation"
   | "manual";
 
 export interface Trade {
@@ -43,6 +44,7 @@ export interface Match {
   capitalGain: number; // proceeds - cost base
   cgtDiscountEligible: boolean; // held > 12 months
   discountedGain: number; // gain after 50% CGT discount if eligible
+  cgtMethod?: "discount" | "indexation";
 }
 
 export interface CgtSummary {

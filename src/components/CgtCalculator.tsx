@@ -24,6 +24,7 @@ import {
   isCgtDiscountEligible,
   tradesToParcels,
   STRATEGY_LABELS,
+  buildMatch,
 } from "@/lib/cgt";
 import { exportAtoCsv, type CarriedLosses } from "@/lib/export";
 import CsvInput from "./CsvInput";
@@ -54,6 +55,7 @@ export default function CgtCalculator() {
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [financialYears, setFinancialYears] = useState<number[]>([]);
   const [brokerFormat, setBrokerFormat] = useState<string>("unknown");
+  const [preCgtMode, setPreCgtMode] = useState(false);
 
   const applyResults = useCallback(
     (
@@ -93,15 +95,18 @@ export default function CgtCalculator() {
   const handleStrategyChange = useCallback(
     (newStrategy: MatchStrategy) => {
       setStrategy(newStrategy);
+      if (newStrategy !== "indexation") {
+        setPreCgtMode(false);
+      }
       if (trades.length > 0) {
         const filtered = selectedFy
           ? filterTradesByFinancialYear(trades, selectedFy)
           : trades;
-        const result = recalculate(trades, newStrategy, lockedMatchKeys);
+        const result = recalculate(trades, newStrategy, lockedMatchKeys, preCgtMode);
         applyResults(result);
       }
     },
-    [trades, lockedMatchKeys, applyResults, selectedFy],
+    [trades, lockedMatchKeys, applyResults, selectedFy, preCgtMode],
   );
 
   const handleToggleLock = useCallback(
@@ -115,11 +120,11 @@ export default function CgtCalculator() {
       }
       setLockedMatchKeys(next);
       if (trades.length > 0) {
-        const result = recalculate(trades, strategy, next);
+        const result = recalculate(trades, strategy, next, preCgtMode);
         applyResults(result);
       }
     },
-    [lockedMatchKeys, trades, strategy, applyResults],
+    [lockedMatchKeys, trades, strategy, applyResults, preCgtMode],
   );
 
   const handleLockAll = useCallback(() => {
@@ -136,10 +141,10 @@ export default function CgtCalculator() {
       const filtered = selectedFy
         ? filterTradesByFinancialYear(trades, selectedFy)
         : trades;
-      const result = recalculate(filtered, strategy, new Set());
+      const result = recalculate(filtered, strategy, new Set(), preCgtMode);
       applyResults(result);
     }
-  }, [trades, strategy, selectedFy, applyResults]);
+  }, [trades, strategy, selectedFy, applyResults, preCgtMode]);
 
   const handleFyChange = useCallback(
     (fy: number | null) => {
@@ -148,11 +153,11 @@ export default function CgtCalculator() {
         const filtered = fy
           ? filterTradesByFinancialYear(trades, fy)
           : trades;
-        const result = recalculate(filtered, strategy, lockedMatchKeys);
+        const result = recalculate(filtered, strategy, lockedMatchKeys, preCgtMode);
         applyResults(result);
       }
     },
-    [trades, strategy, lockedMatchKeys, applyResults],
+    [trades, strategy, lockedMatchKeys, applyResults, preCgtMode],
   );
 
   const downloadCsv = useCallback(
@@ -309,6 +314,8 @@ T004,M003,2021-02-15,Buy,LRSOC,194444,0.053631,9.5,10437.68`);
               strategy={strategy}
               onStrategyChange={handleStrategyChange}
               lockedCount={lockedMatchKeys.size}
+              preCgtMode={preCgtMode}
+              onPreCgtModeChange={setPreCgtMode}
             />
 
             {summary && <SummaryCards summary={summary} />}
@@ -356,6 +363,7 @@ function recalculate(
   currentTrades: Trade[],
   currentStrategy: MatchStrategy,
   lockedMatchKeys: Set<string>,
+  preCgtMode = false,
 ): {
   matches: Match[];
   unmatchedSells: Trade[];
@@ -371,27 +379,16 @@ function recalculate(
     const sell = currentTrades.find((t) => t.tradeId === sellId);
     if (!buy || !sell) continue;
 
-    const netProceeds =
-      sell.price * units - (units / sell.units) * sell.brokerage;
-    const buyCostBase =
-      buy.price * units + (units / buy.units) * buy.brokerage;
-    const capitalGain = netProceeds - buyCostBase;
-    const eligible = isCgtDiscountEligible(buy.date, sell.date);
-    const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
-
-    lockedMatches.push({
-      sellTradeId: sell.tradeId,
-      buyTradeId: buy.tradeId,
-      code: sell.code,
-      units,
-      sellDate: sell.date,
-      buyDate: buy.date,
-      sellProceeds: netProceeds,
-      buyCostBase,
-      capitalGain,
-      cgtDiscountEligible: eligible,
-      discountedGain,
-    });
+    lockedMatches.push(
+      buildMatch({
+        sell,
+        buyTradeId: buy.tradeId,
+        buyDate: buy.date,
+        buyCostBase: buy.price * units + (units / buy.units) * buy.brokerage,
+        units,
+        strategy: currentStrategy,
+      }),
+    );
   }
 
   const lockedUnits = new Map<string, number>();
@@ -440,7 +437,7 @@ function recalculate(
   let remainingParcels: Parcel[];
 
   if (currentStrategy === "manual") {
-    const result = matchManualWithLocked(currentTrades, lockedMatchKeys);
+    const result = matchManualWithLocked(currentTrades, lockedMatchKeys, currentStrategy, preCgtMode);
     newMatches = result.matches;
     unmatchedSells = result.unmatchedSells;
     remainingParcels = result.remainingParcels;
