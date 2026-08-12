@@ -13,7 +13,9 @@ import {
   parseCsv,
   sortParcelsByStrategy,
   tradesToParcels,
+  buildMatch,
 } from "../cgt";
+import { isPreCgtAsset, calculateIndexedCostBase } from "../indexation";
 import type { Match, Parcel, Trade } from "../types";
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
@@ -515,5 +517,115 @@ describe("tradesToParcels", () => {
     const parcels = tradesToParcels(trades);
     expect(parcels[0].costBasePerUnit).toBe(0);
     expect(parcels[0].totalCostBase).toBe(0);
+  });
+});
+
+describe("isPreCgtAsset", () => {
+  it("returns true for dates before 21 Sep 1999", () => {
+    expect(isPreCgtAsset("1999-09-20")).toBe(true);
+    expect(isPreCgtAsset("1990-01-01")).toBe(true);
+    expect(isPreCgtAsset("1999-01-01")).toBe(true);
+  });
+
+  it("returns false for dates on or after 21 Sep 1999", () => {
+    expect(isPreCgtAsset("1999-09-21")).toBe(false);
+    expect(isPreCgtAsset("1999-09-22")).toBe(false);
+    expect(isPreCgtAsset("2024-01-01")).toBe(false);
+  });
+});
+
+describe("calculateIndexedCostBase", () => {
+  it("increases cost base using CPI ratio", () => {
+    const result = calculateIndexedCostBase(1000, "1999-01-01", "2024-01-01");
+    expect(result).toBeGreaterThan(1000);
+  });
+
+  it("returns original cost base when CPI data is missing", () => {
+    const result = calculateIndexedCostBase(1000, "1970-01-01", "1970-06-01");
+    expect(result).toBe(1000);
+  });
+
+  it("returns original cost base when CPI not found", () => {
+    const result = calculateIndexedCostBase(1000, "1998-01-01", "1998-01-01");
+    expect(result).toBe(1000);
+  });
+});
+
+describe("matchAutomatic with indexation strategy", () => {
+  it("applies indexation to pre-CGT assets", () => {
+    const trades: Trade[] = [
+      makeTrade("T1", { date: "1998-01-01", action: "Buy", units: 100, price: 10, brokerage: 0 }),
+      makeTrade("T2", { date: "2024-06-01", action: "Sell", units: 100, price: 15, brokerage: 0 }),
+    ];
+    const { matches } = matchAutomatic(trades, "indexation");
+    expect(matches).toHaveLength(1);
+    expect(matches[0].cgtMethod).toBe("indexation");
+    expect(matches[0].buyCostBase).toBeGreaterThan(1000);
+    expect(matches[0].cgtDiscountEligible).toBe(false);
+  });
+
+  it("uses regular CGT for post-CGT assets", () => {
+    const trades: Trade[] = [
+      makeTrade("T1", { date: "2024-01-01", action: "Buy", units: 100, price: 10, brokerage: 0 }),
+      makeTrade("T2", { date: "2024-06-01", action: "Sell", units: 100, price: 15, brokerage: 0 }),
+    ];
+    const { matches } = matchAutomatic(trades, "indexation");
+    expect(matches).toHaveLength(1);
+    expect(matches[0].cgtMethod).toBeUndefined();
+    expect(matches[0].buyCostBase).toBe(1000);
+  });
+
+  it("forces indexation when preCgtMode is enabled", () => {
+    const trades: Trade[] = [
+      makeTrade("T1", { date: "2024-01-01", action: "Buy", units: 100, price: 10, brokerage: 0 }),
+      makeTrade("T2", { date: "2024-06-01", action: "Sell", units: 100, price: 15, brokerage: 0 }),
+    ];
+    const { matches } = matchAutomatic(trades, "indexation", true);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].cgtMethod).toBe("indexation");
+    expect(matches[0].buyCostBase).toBeGreaterThan(1000);
+  });
+});
+
+describe("matchManual with indexation strategy", () => {
+  it("applies indexation to pre-CGT manual matches", () => {
+    const trades: Trade[] = [
+      makeTrade("T1", { date: "1998-01-01", action: "Buy", matchId: "M1", units: 100, price: 10, brokerage: 0 }),
+      makeTrade("T2", { date: "2024-06-01", action: "Sell", matchId: "M1", units: 100, price: 15, brokerage: 0 }),
+    ];
+    const { matches } = matchManual(trades, "indexation");
+    expect(matches).toHaveLength(1);
+    expect(matches[0].cgtMethod).toBe("indexation");
+    expect(matches[0].buyCostBase).toBeGreaterThan(1000);
+  });
+});
+
+describe("buildMatch", () => {
+  it("sets cgtMethod to indexation for pre-CGT assets", () => {
+    const sell = makeTrade("S1", { date: "2024-06-01", action: "Sell", units: 100, price: 15, brokerage: 0 });
+    const match = buildMatch({
+      sell,
+      buyTradeId: "T1",
+      buyDate: "1998-01-01",
+      buyCostBase: 1000,
+      units: 100,
+      strategy: "indexation",
+    });
+    expect(match.cgtMethod).toBe("indexation");
+    expect(match.buyCostBase).toBeGreaterThan(1000);
+  });
+
+  it("sets cgtMethod to discount for eligible post-CGT assets", () => {
+    const sell = makeTrade("S1", { date: "2024-06-01", action: "Sell", units: 100, price: 15, brokerage: 0 });
+    const match = buildMatch({
+      sell,
+      buyTradeId: "T1",
+      buyDate: "2023-01-01",
+      buyCostBase: 1000,
+      units: 100,
+      strategy: "fifo",
+    });
+    expect(match.cgtMethod).toBe("discount");
+    expect(match.discountedGain).toBeCloseTo(250);
   });
 });

@@ -73,7 +73,11 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
         >
           Calculate CGT
         </button>
-        {error && <span className="text-sm text-red-400">{error}</span>}
+        {error && (
+          <span role="status" aria-live="polite" className="text-sm text-red-400">
+            {error}
+          </span>
+        )}
         {tradesCount > 0 && !error && (
           <span className="text-sm text-neutral-400">
             {tradesCount} trades loaded

@@ -44,27 +44,28 @@ export default function MatchResultsTable({
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-neutral-900 text-neutral-400 text-left">
-                <th className="px-4 py-3 font-medium w-10">
+                <th scope="col" className="px-4 py-3 font-medium w-10">
                   <span className="sr-only">Lock</span>
                 </th>
-                <th className="px-4 py-3 font-medium">Code</th>
-                <th className="px-4 py-3 font-medium text-right">Units</th>
-                <th className="px-4 py-3 font-medium">Buy Date</th>
-                <th className="px-4 py-3 font-medium">Sell Date</th>
-                <th className="px-4 py-3 font-medium">Held</th>
-                <th className="px-4 py-3 font-medium text-right">Proceeds</th>
-                <th className="px-4 py-3 font-medium text-right">Cost Base</th>
-                <th className="px-4 py-3 font-medium text-right">
+                <th scope="col" className="px-4 py-3 font-medium">Code</th>
+                <th scope="col" className="px-4 py-3 font-medium text-right">Units</th>
+                <th scope="col" className="px-4 py-3 font-medium">Buy Date</th>
+                <th scope="col" className="px-4 py-3 font-medium">Sell Date</th>
+                <th scope="col" className="px-4 py-3 font-medium">Held</th>
+                <th scope="col" className="px-4 py-3 font-medium text-right">Proceeds</th>
+                <th scope="col" className="px-4 py-3 font-medium text-right">Cost Base</th>
+                <th scope="col" className="px-4 py-3 font-medium text-right">
                   Capital Gain
                 </th>
-                <th className="px-4 py-3 font-medium text-center">
+                <th scope="col" className="px-4 py-3 font-medium text-center">
                   CGT Discount
                 </th>
-                <th className="px-4 py-3 font-medium text-right">
+                <th scope="col" className="px-4 py-3 font-medium text-right">
                   Taxable Gain
                 </th>
-                <th className="px-4 py-3 font-medium">Sell ID</th>
-                <th className="px-4 py-3 font-medium">Buy ID</th>
+                <th scope="col" className="px-4 py-3 font-medium">Method</th>
+                <th scope="col" className="px-4 py-3 font-medium">Sell ID</th>
+                <th scope="col" className="px-4 py-3 font-medium">Buy ID</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-800">
@@ -84,8 +85,9 @@ export default function MatchResultsTable({
                     <td className="px-4 py-3">
                       <button
                         onClick={() => onToggleLock(m)}
+                        aria-label={locked ? "Unlock match" : "Lock match"}
                         title={locked ? "Unlock match" : "Lock match"}
-                        className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
+                        className={`w-5 h-5 rounded border flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-neutral-950 ${
                           locked
                             ? "bg-amber-500/20 border-amber-500 text-amber-400"
                             : "border-neutral-600 hover:border-neutral-400"
@@ -148,6 +150,19 @@ export default function MatchResultsTable({
                     >
                       {formatCurrency(m.discountedGain)}
                     </td>
+                    <td className="px-4 py-3">
+                      {m.cgtMethod === "indexation" ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                          Indexation
+                        </span>
+                      ) : m.cgtMethod === "discount" ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                          Discount
+                        </span>
+                      ) : (
+                        <span className="text-neutral-500 text-xs">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 font-mono text-neutral-400 text-xs">
                       {m.sellTradeId}
                     </td>
@@ -198,7 +213,8 @@ export default function MatchResultsTable({
                     matches.reduce((s, m) => s + m.discountedGain, 0),
                   )}
                 </td>
-                <td colSpan={2} />
+                <td />
+                <td colSpan={3} />
               </tr>
             </tfoot>
           </table>

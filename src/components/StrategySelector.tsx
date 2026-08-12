@@ -7,6 +7,8 @@ interface StrategySelectorProps {
   strategy: MatchStrategy;
   onStrategyChange: (s: MatchStrategy) => void;
   lockedCount: number;
+  preCgtMode?: boolean;
+  onPreCgtModeChange?: (v: boolean) => void;
 }
 
 const strategies: MatchStrategy[] = [
@@ -16,6 +18,7 @@ const strategies: MatchStrategy[] = [
   "max-taxable-income",
   "min-cost-base",
   "max-cost-base",
+  "indexation",
   "manual",
 ];
 
@@ -23,6 +26,8 @@ export default function StrategySelector({
   strategy,
   onStrategyChange,
   lockedCount,
+  preCgtMode = false,
+  onPreCgtModeChange,
 }: StrategySelectorProps) {
   return (
     <section className="mb-8">
@@ -39,12 +44,23 @@ export default function StrategySelector({
             }`}
           >
             <div className="font-medium text-sm">{STRATEGY_LABELS[s]}</div>
-            <div className="mt-1 text-xs text-neutral-500 leading-relaxed">
+            <div className="mt-1 text-xs text-neutral-400 leading-relaxed">
               {STRATEGY_DESCRIPTIONS[s]}
             </div>
           </button>
         ))}
       </div>
+      {strategy === "indexation" && onPreCgtModeChange && (
+        <label className="mt-3 flex items-center gap-2 text-sm text-neutral-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={preCgtMode}
+            onChange={(e) => onPreCgtModeChange(e.target.checked)}
+            className="rounded border-neutral-600 bg-neutral-900 text-blue-500 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-neutral-950"
+          />
+          Treat all assets as pre-CGT (force indexation)
+        </label>
+      )}
       {lockedCount > 0 && (
         <div className="mt-3 text-sm text-neutral-400">
           <span className="text-amber-400 font-medium">

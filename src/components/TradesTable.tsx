@@ -13,15 +13,15 @@ export default function TradesTable({ trades }: TradesTableProps) {
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-neutral-900 text-neutral-400 text-left">
-            <th className="px-4 py-3 font-medium">ID</th>
-            <th className="px-4 py-3 font-medium">Match ID</th>
-            <th className="px-4 py-3 font-medium">Date</th>
-            <th className="px-4 py-3 font-medium">Action</th>
-            <th className="px-4 py-3 font-medium">Code</th>
-            <th className="px-4 py-3 font-medium text-right">Units</th>
-            <th className="px-4 py-3 font-medium text-right">Price</th>
-            <th className="px-4 py-3 font-medium text-right">Brokerage</th>
-            <th className="px-4 py-3 font-medium text-right">Total</th>
+            <th scope="col" className="px-4 py-3 font-medium">ID</th>
+            <th scope="col" className="px-4 py-3 font-medium">Match ID</th>
+            <th scope="col" className="px-4 py-3 font-medium">Date</th>
+            <th scope="col" className="px-4 py-3 font-medium">Action</th>
+            <th scope="col" className="px-4 py-3 font-medium">Code</th>
+            <th scope="col" className="px-4 py-3 font-medium text-right">Units</th>
+            <th scope="col" className="px-4 py-3 font-medium text-right">Price</th>
+            <th scope="col" className="px-4 py-3 font-medium text-right">Brokerage</th>
+            <th scope="col" className="px-4 py-3 font-medium text-right">Total</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-800">

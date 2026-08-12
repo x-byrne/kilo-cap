@@ -21,17 +21,17 @@ export default function ParcelsTable({ parcels }: ParcelsTableProps) {
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-neutral-900 text-neutral-400 text-left">
-            <th className="px-4 py-3 font-medium">Buy ID</th>
-            <th className="px-4 py-3 font-medium">Code</th>
-            <th className="px-4 py-3 font-medium">Date</th>
-            <th className="px-4 py-3 font-medium text-right">Original Units</th>
-            <th className="px-4 py-3 font-medium text-right">
+            <th scope="col" className="px-4 py-3 font-medium">Buy ID</th>
+            <th scope="col" className="px-4 py-3 font-medium">Code</th>
+            <th scope="col" className="px-4 py-3 font-medium">Date</th>
+            <th scope="col" className="px-4 py-3 font-medium text-right">Original Units</th>
+            <th scope="col" className="px-4 py-3 font-medium text-right">
               Remaining Units
             </th>
-            <th className="px-4 py-3 font-medium text-right">
+            <th scope="col" className="px-4 py-3 font-medium text-right">
               Cost Base/Unit
             </th>
-            <th className="px-4 py-3 font-medium text-right">
+            <th scope="col" className="px-4 py-3 font-medium text-right">
               Remaining Cost Base
             </th>
           </tr>

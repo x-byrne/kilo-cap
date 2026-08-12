@@ -6,9 +6,68 @@ import type {
   Parcel,
   Trade,
 } from "./types";
+import { isPreCgtAsset, calculateIndexedCostBase } from "./indexation";
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const CGT_DISCOUNT_DAYS = 365;
+
+export function buildMatch({
+  sell,
+  buyTradeId,
+  buyDate,
+  buyCostBase,
+  units,
+  strategy,
+  preCgtMode = false,
+}: {
+  sell: Trade;
+  buyTradeId: string;
+  buyDate: string;
+  buyCostBase: number;
+  units: number;
+  strategy: MatchStrategy;
+  preCgtMode?: boolean;
+}): Match {
+  const netProceeds =
+    sell.price * units - (units / sell.units) * sell.brokerage;
+  const isPreCgt =
+    (strategy === "indexation" && (preCgtMode || isPreCgtAsset(buyDate)));
+
+  let finalBuyCostBase = buyCostBase;
+  let cgtMethod: Match["cgtMethod"] = undefined;
+
+  if (isPreCgt) {
+    finalBuyCostBase = calculateIndexedCostBase(buyCostBase, buyDate, sell.date);
+    cgtMethod = "indexation";
+  }
+
+  const capitalGain = netProceeds - finalBuyCostBase;
+  const eligible = isCgtDiscountEligible(buyDate, sell.date);
+  const discountedGain = isPreCgt
+    ? capitalGain
+    : eligible
+      ? capitalGain * 0.5
+      : capitalGain;
+
+  if (!isPreCgt && eligible) {
+    cgtMethod = "discount";
+  }
+
+  return {
+    sellTradeId: sell.tradeId,
+    buyTradeId,
+    code: sell.code,
+    units,
+    sellDate: sell.date,
+    buyDate,
+    sellProceeds: netProceeds,
+    buyCostBase: finalBuyCostBase,
+    capitalGain,
+    cgtDiscountEligible: eligible && !isPreCgt,
+    discountedGain,
+    cgtMethod,
+  };
+}
 
 export function parseCsv(csv: string): Trade[] {
   const lines = csv.trim().split("\n");
@@ -233,7 +292,7 @@ export function sortParcelsByStrategy(
       });
       break;
     case "manual":
-      // Manual matching doesn't use automatic parcel sorting
+    case "indexation":
       break;
   }
   return sorted;
@@ -242,14 +301,19 @@ export function sortParcelsByStrategy(
 export function matchTrades(
   trades: Trade[],
   strategy: MatchStrategy,
+  preCgtMode = false,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   if (strategy === "manual") {
-    return matchManual(trades);
+    return matchManual(trades, strategy, preCgtMode);
   }
-  return matchAutomatic(trades, strategy);
+  return matchAutomatic(trades, strategy, preCgtMode);
 }
 
-export function matchManual(trades: Trade[]): {
+export function matchManual(
+  trades: Trade[],
+  strategy: MatchStrategy = "manual",
+  preCgtMode = false,
+): {
   matches: Match[];
   unmatchedSells: Trade[];
   remainingParcels: Parcel[];
@@ -284,34 +348,19 @@ export function matchManual(trades: Trade[]): {
         const matchedUnits = Math.min(remainingSellUnits, availableUnits);
         remainingSellUnits -= matchedUnits;
 
-        const sellProceeds =
-          (sell.price * matchedUnits) +
-          (matchedUnits / sell.units) * sell.brokerage;
-        // For sells, brokerage reduces proceeds
-        const netProceeds =
-          sell.price * matchedUnits -
-          (matchedUnits / sell.units) * sell.brokerage;
-        const buyCostBase =
-          buy.price * matchedUnits +
-          (matchedUnits / buy.units) * buy.brokerage;
-
-        const capitalGain = netProceeds - buyCostBase;
-        const eligible = isCgtDiscountEligible(buy.date, sell.date);
-        const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
-
-        matches.push({
-          sellTradeId: sell.tradeId,
-          buyTradeId: buy.tradeId,
-          code: sell.code,
-          units: matchedUnits,
-          sellDate: sell.date,
-          buyDate: buy.date,
-          sellProceeds: netProceeds,
-          buyCostBase,
-          capitalGain,
-          cgtDiscountEligible: eligible,
-          discountedGain,
-        });
+        matches.push(
+          buildMatch({
+            sell,
+            buyTradeId: buy.tradeId,
+            buyDate: buy.date,
+            buyCostBase:
+              buy.price * matchedUnits +
+              (matchedUnits / buy.units) * buy.brokerage,
+            units: matchedUnits,
+            strategy,
+            preCgtMode,
+          }),
+        );
       }
 
       if (remainingSellUnits > 0) {
@@ -342,6 +391,7 @@ export function matchManual(trades: Trade[]): {
 export function matchAutomatic(
   trades: Trade[],
   strategy: MatchStrategy,
+  preCgtMode = false,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   const parcels = tradesToParcels(trades);
   const sells = trades
@@ -388,29 +438,18 @@ export function matchAutomatic(
         (matchedUnits / sell.units) * sell.brokerage;
       totalSellBrokerageAllocated += sellBrokeragePortion;
 
-      // Proceeds = price * units - proportional brokerage
-      const netProceeds = sell.price * matchedUnits - sellBrokeragePortion;
-      // Cost base = buy price * units + proportional brokerage
-      const buyCostBase =
-        (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
-
-      const capitalGain = netProceeds - buyCostBase;
-      const eligible = isCgtDiscountEligible(parcel.date, sell.date);
-      const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
-
-      matches.push({
-        sellTradeId: sell.tradeId,
-        buyTradeId: parcel.tradeId,
-        code: sell.code,
-        units: matchedUnits,
-        sellDate: sell.date,
-        buyDate: parcel.date,
-        sellProceeds: netProceeds,
-        buyCostBase,
-        capitalGain,
-        cgtDiscountEligible: eligible,
-        discountedGain,
-      });
+      matches.push(
+        buildMatch({
+          sell,
+          buyTradeId: parcel.tradeId,
+          buyDate: parcel.date,
+          buyCostBase:
+            (parcel.totalCostBase / parcel.totalUnits) * matchedUnits,
+          units: matchedUnits,
+          strategy,
+          preCgtMode,
+        }),
+      );
     }
 
     if (remainingSellUnits > 0) {
@@ -579,6 +618,7 @@ export const STRATEGY_LABELS: Record<MatchStrategy, string> = {
   "max-taxable-income": "Maximise Taxable Income",
   "min-cost-base": "Minimise Cost Base",
   "max-cost-base": "Maximise Cost Base",
+  indexation: "Indexation (Pre-CGT Assets)",
   manual: "Manual Matching (match_id)",
 };
 
@@ -593,6 +633,8 @@ export const STRATEGY_DESCRIPTIONS: Record<MatchStrategy, string> = {
     "Match parcels with the lowest cost base per unit first.",
   "max-cost-base":
     "Match parcels with the highest cost base per unit first.",
+  indexation:
+    "Apply CPI indexation to increase cost base for pre-CGT assets (acquired before 21 Sep 1999).",
   manual:
     "Use match_id column from CSV to define which buys match which sells.",
 };
@@ -605,6 +647,7 @@ export function matchAutomaticWithAvailable(
   sells: Trade[],
   parcels: Parcel[],
   strategy: MatchStrategy,
+  preCgtMode = false,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   const matches: Match[] = [];
   const unmatchedSells: Trade[] = [];
@@ -642,25 +685,19 @@ export function matchAutomaticWithAvailable(
       const sellBrokeragePortion =
         (matchedUnits / sell.units) * sell.brokerage;
       const netProceeds = sell.price * matchedUnits - sellBrokeragePortion;
-      const buyCostBase =
-        (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
-      const capitalGain = netProceeds - buyCostBase;
-      const eligible = isCgtDiscountEligible(parcel.date, sell.date);
-      const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
 
-      matches.push({
-        sellTradeId: sell.tradeId,
-        buyTradeId: parcel.tradeId,
-        code: sell.code,
-        units: matchedUnits,
-        sellDate: sell.date,
-        buyDate: parcel.date,
-        sellProceeds: netProceeds,
-        buyCostBase,
-        capitalGain,
-        cgtDiscountEligible: eligible,
-        discountedGain,
-      });
+      matches.push(
+        buildMatch({
+          sell,
+          buyTradeId: parcel.tradeId,
+          buyDate: parcel.date,
+          buyCostBase:
+            (parcel.totalCostBase / parcel.totalUnits) * matchedUnits,
+          units: matchedUnits,
+          strategy,
+          preCgtMode,
+        }),
+      );
     }
 
     if (remainingSellUnits > 0) {
@@ -680,6 +717,8 @@ export function matchAutomaticWithAvailable(
 export function matchManualWithLocked(
   trades: Trade[],
   lockedMatchKeys: Set<string>,
+  strategy: MatchStrategy = "manual",
+  preCgtMode = false,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   const lockedBuyIds = new Set<string>();
   const lockedSellIds = new Set<string>();
@@ -725,29 +764,19 @@ export function matchManualWithLocked(
         const matchedUnits = Math.min(remainingSellUnits, buy.units);
         remainingSellUnits -= matchedUnits;
 
-        const netProceeds =
-          sell.price * matchedUnits -
-          (matchedUnits / sell.units) * sell.brokerage;
-        const buyCostBase =
-          buy.price * matchedUnits +
-          (matchedUnits / buy.units) * buy.brokerage;
-        const capitalGain = netProceeds - buyCostBase;
-        const eligible = isCgtDiscountEligible(buy.date, sell.date);
-        const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
-
-        matches.push({
-          sellTradeId: sell.tradeId,
-          buyTradeId: buy.tradeId,
-          code: sell.code,
-          units: matchedUnits,
-          sellDate: sell.date,
-          buyDate: buy.date,
-          sellProceeds: netProceeds,
-          buyCostBase,
-          capitalGain,
-          cgtDiscountEligible: eligible,
-          discountedGain,
-        });
+        matches.push(
+          buildMatch({
+            sell,
+            buyTradeId: buy.tradeId,
+            buyDate: buy.date,
+            buyCostBase:
+              buy.price * matchedUnits +
+              (matchedUnits / buy.units) * buy.brokerage,
+            units: matchedUnits,
+            strategy,
+            preCgtMode,
+          }),
+        );
       }
 
       if (remainingSellUnits > 0) {
