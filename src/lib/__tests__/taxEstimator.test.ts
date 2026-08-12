@@ -77,7 +77,7 @@ describe("calculateEstimatedTax", () => {
   it("returns zero tax on gain for negative net capital gain", () => {
     const result = calculateEstimatedTax(50000, -10000);
     expect(result.taxOnGain).toBe(0);
-    expect(result.totalTax).toBeLessThan(calculateEstimatedTax(50000, 0).totalTax);
+    expect(result.totalTax).toBe(calculateEstimatedTax(50000, 0).totalTax);
   });
 
   it("calculates effective rate correctly", () => {

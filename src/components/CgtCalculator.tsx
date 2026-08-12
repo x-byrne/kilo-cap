@@ -133,7 +133,14 @@ export default function CgtCalculator() {
       next.add(matchKey(m));
     }
     setLockedMatchKeys(next);
-  }, [matches, lockedMatchKeys]);
+    if (trades.length > 0) {
+      const filtered = selectedFy
+        ? filterTradesByFinancialYear(trades, selectedFy)
+        : trades;
+      const result = recalculate(filtered, strategy, next, preCgtMode);
+      applyResults(result);
+    }
+  }, [trades, strategy, selectedFy, matches, lockedMatchKeys, applyResults, preCgtMode]);
 
   const handleUnlockAll = useCallback(() => {
     setLockedMatchKeys(new Set());
@@ -387,6 +394,7 @@ function recalculate(
         buyCostBase: buy.price * units + (units / buy.units) * buy.brokerage,
         units,
         strategy: currentStrategy,
+        preCgtMode,
       }),
     );
   }
@@ -446,6 +454,7 @@ function recalculate(
       unlockedSells,
       availableParcels,
       currentStrategy,
+      preCgtMode,
     );
     newMatches = result.matches;
     unmatchedSells = result.unmatchedSells;

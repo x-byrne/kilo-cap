@@ -46,7 +46,8 @@ export function calculateEstimatedTax(
   taxableIncome: number,
   netCapitalGain: number,
 ): TaxEstimatorResult {
-  const totalTaxable = Math.max(0, taxableIncome + netCapitalGain);
+  const effectiveGain = Math.max(0, netCapitalGain);
+  const totalTaxable = taxableIncome + effectiveGain;
 
   const marginalRate = getMarginalRate(totalTaxable);
   const regularTax = calculateIncomeTax(taxableIncome);
