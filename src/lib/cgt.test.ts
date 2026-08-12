@@ -11,7 +11,7 @@ import {
   getFinancialYearLabel,
   filterTradesByFinancialYear,
 } from "./cgt";
-import type { MatchStrategy, Parcel, Trade } from "./types";
+import type { Match, MatchStrategy, Parcel, Trade } from "./types";
 
 const HEADER =
   "trade_id,date,action,code,units,price,brokerage,total,match_id";
