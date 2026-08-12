@@ -25,6 +25,7 @@ import {
   getHeldDays,
   detectBrokerFormat,
 } from "@/lib/cgt";
+import { exportAtoReport } from "@/lib/atoExport";
 
 const SAMPLE_CSV = `trade_id,match_id,date,action,code,units,price,brokerage,total
 T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
@@ -540,6 +541,20 @@ export default function CgtCalculator() {
     URL.revokeObjectURL(url);
   }, [matches, unmatchedSells, selectedFy]);
 
+  const handleExportAto = useCallback(() => {
+    if (!summary || !matches.length) return;
+
+    const report = exportAtoReport(summary, matches, trades, selectedFy);
+    const blob = new Blob([report], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const fyLabel = selectedFy ? `_FY${selectedFy}` : "_all";
+    a.href = url;
+    a.download = `ato_report${fyLabel}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [summary, matches, trades, selectedFy]);
+
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -683,6 +698,26 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                   />
                 </svg>
                 Export Report
+              </button>
+              <button
+                onClick={handleExportAto}
+                disabled={!matches.length && !unmatchedSells.length}
+                className="text-sm px-4 py-1.5 rounded-md bg-blue-900 hover:bg-blue-800 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-200 transition-colors flex items-center gap-2"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                  />
+                </svg>
+                Export ATO Report
               </button>
             </div>
           </section>
