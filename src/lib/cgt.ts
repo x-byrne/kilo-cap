@@ -89,15 +89,33 @@ function validateTradeRow(
     throw new Error(`Row ${lineNum}: Invalid date "${date}"`);
   }
 
+  if (Number.isNaN(units)) {
+    throw new Error(
+      `Row ${lineNum}: Units must be a valid number, got "${units}"`,
+    );
+  }
+
   if (units <= 0) {
     throw new Error(
       `Row ${lineNum}: Units must be a positive number, got "${units}"`,
     );
   }
 
+  if (Number.isNaN(price)) {
+    throw new Error(
+      `Row ${lineNum}: Price must be a valid number, got "${price}"`,
+    );
+  }
+
   if (price <= 0) {
     throw new Error(
       `Row ${lineNum}: Price must be a positive number, got "${price}"`,
+    );
+  }
+
+  if (Number.isNaN(brokerage)) {
+    throw new Error(
+      `Row ${lineNum}: Brokerage must be a valid number, got "${brokerage}"`,
     );
   }
 
