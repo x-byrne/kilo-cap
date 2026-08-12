@@ -25,6 +25,7 @@ import {
 import CsvInput from "./CsvInput";
 import StrategySelector from "./StrategySelector";
 import SummaryCards from "./SummaryCards";
+import TaxEstimator from "./TaxEstimator";
 import TabNavigation from "./TabNavigation";
 import MatchResultsTable from "./MatchResultsTable";
 import ParcelsTable from "./ParcelsTable";
@@ -278,6 +279,10 @@ T004,M003,2021-02-15,Buy,LRSOC,194444,0.053631,9.5,10437.68`);
             />
 
             {summary && <SummaryCards summary={summary} />}
+
+            {summary && (
+              <TaxEstimator netCapitalGain={summary.netCapitalGain} />
+            )}
 
             <TabNavigation activeTab={activeTab} onTabChange={setActiveTab}>
               {activeTab === "matches" && (
