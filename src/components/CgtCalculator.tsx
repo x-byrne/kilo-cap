@@ -19,6 +19,7 @@ import {
   matchAutomaticWithAvailable,
   matchManualWithLocked,
   getHeldDays,
+  isCgtDiscountEligible,
   tradesToParcels,
 } from "@/lib/cgt";
 import CsvInput from "./CsvInput";
@@ -337,7 +338,7 @@ function recalculate(
     const buyCostBase =
       buy.price * units + (units / buy.units) * buy.brokerage;
     const capitalGain = netProceeds - buyCostBase;
-    const eligible = getHeldDays(buy.date, sell.date) > 365;
+    const eligible = isCgtDiscountEligible(buy.date, sell.date);
     const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
 
     lockedMatches.push({

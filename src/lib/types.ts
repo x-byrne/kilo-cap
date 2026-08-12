@@ -51,6 +51,8 @@ export interface CgtSummary {
   totalCapitalGain: number;
   totalDiscountedGain: number;
   totalDiscountAmount: number;
+  totalCapitalLosses: number;
+  netCapitalGain: number;
   matchCount: number;
   unmatchedSells: Trade[];
   remainingParcels: Parcel[];

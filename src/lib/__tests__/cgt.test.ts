@@ -146,15 +146,15 @@ T3,2024-06-01,Sell,BHP,50,15,0,750`;
   });
 
   it("defaults optional columns when missing", () => {
-    const csv = `trade_id,date,action
-T1,2024-01-01,Buy`;
+    const csv = `trade_id,date,action,units,price
+T1,2024-01-01,Buy,100,10`;
     const trades = parseCsv(csv);
     expect(trades).toHaveLength(1);
     expect(trades[0]).toMatchObject({
       tradeId: "T1",
       code: "",
-      units: 0,
-      price: 0,
+      units: 100,
+      price: 10,
       brokerage: 0,
       matchId: "",
     });
@@ -366,23 +366,27 @@ describe("calculateCgtSummary", () => {
       makeMatch("T1", { sellProceeds: 1500, buyCostBase: 1000, capitalGain: 500, discountedGain: 500 }),
       makeMatch("T2", { sellProceeds: 800, buyCostBase: 1000, capitalGain: -200, discountedGain: -200 }),
     ];
-    const summary = calculateCgtSummary(matches);
+    const summary = calculateCgtSummary({ matches, unmatchedSells: [], remainingParcels: [] });
     expect(summary.totalProceeds).toBe(2300);
     expect(summary.totalCostBase).toBe(2000);
     expect(summary.totalCapitalGain).toBe(300);
     expect(summary.totalDiscountedGain).toBe(300);
     expect(summary.totalDiscountAmount).toBe(0);
     expect(summary.matchCount).toBe(2);
+    expect(summary.totalCapitalLosses).toBe(200);
+    expect(summary.netCapitalGain).toBe(300);
   });
 
   it("returns zeros for empty matches", () => {
-    const summary = calculateCgtSummary([]);
+    const summary = calculateCgtSummary({ matches: [], unmatchedSells: [], remainingParcels: [] });
     expect(summary.totalProceeds).toBe(0);
     expect(summary.totalCostBase).toBe(0);
     expect(summary.totalCapitalGain).toBe(0);
     expect(summary.totalDiscountedGain).toBe(0);
     expect(summary.totalDiscountAmount).toBe(0);
     expect(summary.matchCount).toBe(0);
+    expect(summary.totalCapitalLosses).toBe(0);
+    expect(summary.netCapitalGain).toBe(0);
   });
 });
 

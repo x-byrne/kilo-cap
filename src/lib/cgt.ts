@@ -445,6 +445,7 @@ export function calculateCgtSummary(result: {
   }
 
   const totalDiscountAmount = totalCapitalGain - totalDiscountedGain;
+  const lossOffsets = calculateLossOffsets(result.matches);
 
   return {
     totalProceeds,
@@ -452,6 +453,8 @@ export function calculateCgtSummary(result: {
     totalCapitalGain,
     totalDiscountedGain,
     totalDiscountAmount,
+    totalCapitalLosses: lossOffsets.totalCapitalLosses,
+    netCapitalGain: lossOffsets.netCapitalGain,
     matchCount: result.matches.length,
     unmatchedSells: result.unmatchedSells,
     remainingParcels: result.remainingParcels,

@@ -42,6 +42,22 @@ export default function SummaryCards({ summary }: SummaryCardsProps) {
                 : ""
           }
         />
+        <SummaryCard
+          label="Capital Losses"
+          value={formatCurrency(summary.totalCapitalLosses)}
+          highlight="text-red-400"
+        />
+        <SummaryCard
+          label="Net Capital Gain"
+          value={formatCurrency(summary.netCapitalGain)}
+          highlight={
+            summary.netCapitalGain > 0
+              ? "text-green-400"
+              : summary.netCapitalGain < 0
+                ? "text-red-400"
+                : ""
+          }
+        />
       </div>
       {summary.totalDiscountAmount > 0 && (
         <div className="mt-3 text-sm text-neutral-400">
