@@ -1,7 +1,5 @@
 export type Action = "Buy" | "Sell";
 
-export type EntityType = "individual" | "company" | "trust" | "superannuation";
-
 export type MatchStrategy =
   | "fifo"
   | "lifo"

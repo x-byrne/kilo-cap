@@ -470,7 +470,7 @@ export function calculateCgtSummary(result: {
   for (const m of result.matches) {
     totalProceeds += m.sellProceeds;
     totalCostBase += m.buyCostBase;
-    totalCapitalGain += m.capitalGain;
+    if (m.capitalGain > 0) totalCapitalGain += m.capitalGain;
     totalCapitalLoss += m.capitalLoss;
     totalDiscountedGain += m.discountedGain;
   }

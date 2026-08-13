@@ -863,7 +863,7 @@ T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
                       value={formatCurrency(summary.totalCostBase)}
                     />
                     <SummaryCard
-                      label="Capital Gain (Before Discount)"
+                      label="Net Capital Gain/Loss (Before Discount)"
                       value={formatCurrency(summary.totalCapitalGain)}
                       highlight={
                         summary.totalCapitalGain > 0
