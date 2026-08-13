@@ -481,14 +481,18 @@ export function calculateCgtSummary(result: {
   for (const m of result.matches) {
     totalProceeds += m.sellProceeds;
     totalCostBase += m.buyCostBase;
-    if (m.capitalGain > 0) totalCapitalGain += m.capitalGain;
-    totalCapitalLoss += m.capitalLoss;
+    if (m.capitalGain > 0) {
+      totalCapitalGain += m.capitalGain;
+    } else {
+      totalCapitalLoss += Math.abs(m.capitalGain);
+    }
     totalDiscountedGain += m.discountedGain;
   }
 
-  const totalDiscountAmount = totalCapitalGain - totalDiscountedGain;
   const netCapitalGain = totalCapitalGain - totalCapitalLoss;
-  const carryForwardLoss = netCapitalGain < 0 ? Math.abs(netCapitalGain) : 0;
+  const totalDiscountAmount = totalCapitalGain - totalDiscountedGain;
+  const carryForwardLoss =
+    netCapitalGain < 0 ? Math.abs(netCapitalGain) : 0;
 
   return {
     totalProceeds,
@@ -496,9 +500,9 @@ export function calculateCgtSummary(result: {
     totalCapitalGain,
     totalCapitalLoss,
     netCapitalGain,
-    carryForwardLoss,
     totalDiscountedGain,
     totalDiscountAmount,
+    carryForwardLoss,
     matchCount: result.matches.length,
     unmatchedSells: result.unmatchedSells,
     remainingParcels: result.remainingParcels,
