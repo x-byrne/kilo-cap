@@ -79,107 +79,32 @@ test("parseCsv rejects negative brokerage", () => {
   expect(() => parseCsv(csv)).toThrow(/Brokerage must be non-negative/);
 });
 
-test("calculateCgtSummary computes totalCapitalLoss and carryForwardLoss", () => {
+test("calculateCgtSummary tracks losses and carry-forward via matchTrades", () => {
   const trades = [
-    { tradeId: "T1", date: "2024-01-15", action: "Buy" as const, code: "BHP", units: 100, price: 20, brokerage: 10, total: 2010 },
-    { tradeId: "T2", date: "2024-06-15", action: "Sell" as const, code: "BHP", units: 50, price: 15, brokerage: 5, total: 745 },
-    { tradeId: "T3", date: "2024-01-15", action: "Buy" as const, code: "CBA", units: 100, price: 50, brokerage: 10, total: 5010 },
-    { tradeId: "T4", date: "2024-06-15", action: "Sell" as const, code: "CBA", units: 50, price: 80, brokerage: 5, total: 3995 },
+    makeTrade({ tradeId: "T1", date: "2024-01-15", action: "Buy", code: "BHP", units: 100, price: 20, brokerage: 10 }),
+    makeTrade({ tradeId: "T2", date: "2024-06-15", action: "Sell", code: "BHP", units: 50, price: 15, brokerage: 5 }),
   ];
 
-  const parcels = tradesToParcels(trades);
-  const sells = trades.filter((t) => t.action === "Sell");
-  const sorted = sortParcelsByStrategy(parcels, "fifo");
-
-  const matches: any[] = [];
-  let remaining = sells[0].units;
-
-  for (const p of sorted) {
-    if (remaining <= 0) break;
-    const matched = Math.min(remaining, p.unitsRemaining);
-    const capitalGain =
-      sells[0].price * matched - (matched / sells[0].units) * sells[0].brokerage -
-      (p.totalCostBase / p.totalUnits) * matched;
-    const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
-    const eligible = capitalGain > 0 && new Date(p.date).getTime() <= new Date(sells[0].date).getTime();
-    const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
-
-    matches.push({
-      sellTradeId: sells[0].tradeId,
-      buyTradeId: p.tradeId,
-      code: p.code,
-      units: matched,
-      sellDate: sells[0].date,
-      buyDate: p.date,
-      sellProceeds: sells[0].price * matched,
-      buyCostBase: (p.totalCostBase / p.totalUnits) * matched,
-      capitalGain,
-      capitalLoss,
-      cgtDiscountEligible: eligible,
-      discountedGain,
-    });
-    remaining -= matched;
-  }
-
-  const summary = calculateCgtSummary({
-    matches,
-    unmatchedSells: [],
-    remainingParcels: [],
-  });
+  const result = matchTrades(trades, "fifo");
+  const summary = calculateCgtSummary(result);
 
   expect(summary.totalCapitalLoss).toBeGreaterThan(0);
-  expect(summary.netCapitalGain).toBeLessThan(summary.totalCapitalGain);
+  expect(summary.netCapitalGain).toBeLessThan(0);
   expect(summary.carryForwardLoss).toBeGreaterThan(0);
 });
 
-test("discount is not applied to capital losses", () => {
+test("discount is not applied to capital losses via matchTrades", () => {
   const trades = [
-    { tradeId: "T1", date: "2022-01-15", action: "Buy" as const, code: "BHP", units: 100, price: 20, brokerage: 10, total: 2010 },
-    { tradeId: "T2", date: "2024-06-15", action: "Sell" as const, code: "BHP", units: 50, price: 15, brokerage: 5, total: 745 },
+    makeTrade({ tradeId: "T1", date: "2022-01-15", action: "Buy", code: "BHP", units: 100, price: 20, brokerage: 10 }),
+    makeTrade({ tradeId: "T2", date: "2024-06-15", action: "Sell", code: "BHP", units: 50, price: 15, brokerage: 5 }),
   ];
 
-  const parcels = tradesToParcels(trades);
-  const sorted = sortParcelsByStrategy(parcels, "fifo");
-  const sell = trades.find((t) => t.action === "Sell")!;
+  const result = matchTrades(trades, "fifo");
+  const match = result.matches[0];
 
-  const matches: any[] = [];
-  let remaining = sell.units;
-
-  for (const p of sorted) {
-    if (remaining <= 0) break;
-    const matched = Math.min(remaining, p.unitsRemaining);
-    const capitalGain =
-      sell.price * matched - (matched / sell.units) * sell.brokerage -
-      (p.totalCostBase / p.totalUnits) * matched;
-    const eligible = capitalGain > 0 && new Date(p.date).getTime() <= new Date(sell.date).getTime();
-    const discountedGain = eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
-
-    matches.push({
-      sellTradeId: sell.tradeId,
-      buyTradeId: p.tradeId,
-      code: p.code,
-      units: matched,
-      sellDate: sell.date,
-      buyDate: p.date,
-      sellProceeds: sell.price * matched,
-      buyCostBase: (p.totalCostBase / p.totalUnits) * matched,
-      capitalGain,
-      capitalLoss: capitalGain < 0 ? Math.abs(capitalGain) : 0,
-      cgtDiscountEligible: eligible,
-      discountedGain,
-    });
-    remaining -= matched;
-  }
-
-  const summary = calculateCgtSummary({
-    matches,
-    unmatchedSells: [],
-    remainingParcels: [],
-  });
-
-  expect(matches[0].capitalGain).toBeLessThan(0);
-  expect(matches[0].discountedGain).toBe(matches[0].capitalGain);
-  expect(matches[0].capitalLoss).toBe(Math.abs(matches[0].capitalGain));
+  expect(match.capitalGain).toBeLessThan(0);
+  expect(match.discountedGain).toBe(match.capitalGain);
+  expect(match.capitalLoss).toBe(Math.abs(match.capitalGain));
 });
 
 // ─── tradesToParcels ───────────────────────────────────────────────────────────
@@ -392,6 +317,7 @@ test("calculateCgtSummary aggregates correctly", () => {
       sellProceeds: 3000,
       buyCostBase: 1000,
       capitalGain: 2000,
+      capitalLoss: 0,
       cgtDiscountEligible: true,
       discountedGain: 1000,
     },
@@ -405,6 +331,7 @@ test("calculateCgtSummary aggregates correctly", () => {
       sellProceeds: 1500,
       buyCostBase: 1000,
       capitalGain: 500,
+      capitalLoss: 0,
       cgtDiscountEligible: true,
       discountedGain: 250,
     },

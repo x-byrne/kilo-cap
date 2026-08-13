@@ -564,7 +564,7 @@ function SummaryCards({ summary }: { summary: CgtSummary }) {
           value={formatCurrency(summary.totalCostBase)}
         />
         <SummaryCard
-          label="Capital Gain (Before Discount)"
+          label="Net Capital Gain/Loss (Before Discount)"
           value={formatCurrency(summary.totalCapitalGain)}
           highlight={
             summary.totalCapitalGain > 0
