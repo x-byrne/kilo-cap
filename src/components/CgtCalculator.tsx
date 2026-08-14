@@ -25,9 +25,19 @@ import {
   getHeldDays,
   detectBrokerFormat,
 } from "@/lib/cgt";
-import MatchResultsTable from "@/components/MatchResultsTable";
-import ParcelsTable from "@/components/ParcelsTable";
-import TradesTable from "@/components/TradesTable";
+import { exportAtoReport } from "@/lib/atoExport";
+import {
+  type EntityType,
+} from "@/lib/entityRules";
+import {
+  getCgtDiscountRate,
+  getTaxRate,
+  getTaxRateLabel,
+  calculateEstimatedTax,
+  getActiveAssetExemptionNote,
+  ENTITY_TYPE_LABELS,
+  ENTITY_TYPE_DESCRIPTIONS,
+} from "@/lib/entityRules";
 
 const SAMPLE_CSV = `trade_id,match_id,date,action,code,units,price,brokerage,total
 T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06
@@ -52,6 +62,7 @@ function matchKey(m: Match): string {
 function buildMatchFromKey(
   key: string,
   trades: Trade[],
+  discountRate = 0.5,
 ): Match | null {
   const parts = key.split("-");
   const units = parseInt(parts[parts.length - 1], 10);
@@ -67,8 +78,10 @@ function buildMatchFromKey(
   const buyCostBase =
     buy.price * units + (units / buy.units) * buy.brokerage;
   const capitalGain = netProceeds - buyCostBase;
+  const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
   const eligible = isCgtDiscountEligible(buy.date, sell.date);
-  const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+  const discountedGain =
+    eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
   return {
     sellTradeId: sell.tradeId,
@@ -80,6 +93,7 @@ function buildMatchFromKey(
     sellProceeds: netProceeds,
     buyCostBase,
     capitalGain,
+    capitalLoss,
     cgtDiscountEligible: eligible,
     discountedGain,
   };
@@ -88,10 +102,11 @@ function buildMatchFromKey(
 function getLockedUnits(
   lockedMatchKeys: Set<string>,
   trades: Trade[],
+  discountRate = 0.5,
 ): Map<string, number> {
   const lockedUnits = new Map<string, number>();
   for (const key of lockedMatchKeys) {
-    const m = buildMatchFromKey(key, trades);
+    const m = buildMatchFromKey(key, trades, discountRate);
     if (!m) continue;
     lockedUnits.set(m.buyTradeId, (lockedUnits.get(m.buyTradeId) || 0) + m.units);
   }
@@ -102,19 +117,22 @@ function recalculate(
   currentTrades: Trade[],
   currentStrategy: MatchStrategy,
   lockedMatchKeys: Set<string>,
+  discountRate = 0.5,
 ): {
   matches: Match[];
   unmatchedSells: Trade[];
   remainingParcels: Parcel[];
 } {
+  // Rebuild locked matches, dropping any whose trades no longer exist
   const lockedMatches: Match[] = [];
   for (const key of lockedMatchKeys) {
-    const m = buildMatchFromKey(key, currentTrades);
+    const m = buildMatchFromKey(key, currentTrades, discountRate);
     if (m) lockedMatches.push(m);
   }
 
-  const lockedUnits = getLockedUnits(lockedMatchKeys, currentTrades);
+  const lockedUnits = getLockedUnits(lockedMatchKeys, currentTrades, discountRate);
 
+  // Build available parcels with locked units subtracted
   const allParcels = tradesToParcels(currentTrades);
   const availableParcels: Parcel[] = [];
   for (const p of allParcels) {
@@ -125,10 +143,12 @@ function recalculate(
     }
   }
 
+  // Get sells excluding those fully consumed by locked matches
   const allSells = currentTrades
     .filter((t) => t.action === "Sell")
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
+  // Calculate sell units consumed by locked matches
   const lockedSellUnits = new Map<string, number>();
   for (const key of lockedMatchKeys) {
     const parts = key.split("-");
@@ -146,6 +166,7 @@ function recalculate(
     }
   }
 
+  // Match unlocked sells
   let newMatches: Match[];
   let unmatchedSells: Trade[];
   let remainingParcels: Parcel[];
@@ -154,6 +175,7 @@ function recalculate(
     const result = matchManualWithLocked(
       currentTrades,
       lockedMatchKeys,
+      discountRate,
     );
     newMatches = result.matches;
     unmatchedSells = result.unmatchedSells;
@@ -163,6 +185,7 @@ function recalculate(
       unlockedSells,
       availableParcels,
       currentStrategy,
+      discountRate,
     );
     newMatches = result.matches;
     unmatchedSells = result.unmatchedSells;
@@ -179,7 +202,9 @@ function recalculate(
 function matchManualWithLocked(
   trades: Trade[],
   lockedMatchKeys: Set<string>,
+  discountRate = 0.5,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
+  // Determine which trade IDs are consumed by locked matches
   const lockedBuyIds = new Set<string>();
   const lockedSellIds = new Set<string>();
   const lockedBuyUnits = new Map<string, number>();
@@ -196,6 +221,7 @@ function matchManualWithLocked(
     lockedSellUnits.set(sellId, (lockedSellUnits.get(sellId) || 0) + units);
   }
 
+  // Group non-locked trades by match_id
   const matchGroups = new Map<string, Trade[]>();
   for (const trade of trades) {
     if (!trade.matchId) continue;
@@ -230,8 +256,10 @@ function matchManualWithLocked(
           buy.price * matchedUnits +
           (matchedUnits / buy.units) * buy.brokerage;
         const capitalGain = netProceeds - buyCostBase;
+        const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
         const eligible = isCgtDiscountEligible(buy.date, sell.date);
-        const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+        const discountedGain =
+          eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
         matches.push({
           sellTradeId: sell.tradeId,
@@ -243,17 +271,20 @@ function matchManualWithLocked(
           sellProceeds: netProceeds,
           buyCostBase,
           capitalGain,
+          capitalLoss,
           cgtDiscountEligible: eligible,
           discountedGain,
         });
       }
 
       if (remainingSellUnits > 0) {
+        // Add to unmatched below
       }
     }
   }
 
   const unmatchedSells: Trade[] = [];
+  // Sells without match_id that aren't locked
   for (const t of trades) {
     if (
       t.action === "Sell" &&
@@ -264,6 +295,7 @@ function matchManualWithLocked(
     }
   }
 
+  // Remaining parcels: buys not used in manual matching and not locked
   const remainingParcels = tradesToParcels(
     trades.filter(
       (t) =>
@@ -280,10 +312,12 @@ function matchAutomaticWithAvailable(
   sells: Trade[],
   parcels: Parcel[],
   strategy: MatchStrategy,
+  discountRate = 0.5,
 ): { matches: Match[]; unmatchedSells: Trade[]; remainingParcels: Parcel[] } {
   const matches: Match[] = [];
   const unmatchedSells: Trade[] = [];
 
+  // Group parcels by code
   const parcelsByCode = new Map<string, Parcel[]>();
   for (const p of parcels) {
     const group = parcelsByCode.get(p.code) || [];
@@ -320,8 +354,10 @@ function matchAutomaticWithAvailable(
       const buyCostBase =
         (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
       const capitalGain = netProceeds - buyCostBase;
+      const capitalLoss = capitalGain < 0 ? Math.abs(capitalGain) : 0;
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
-      const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+      const discountedGain =
+        eligible && capitalGain > 0 ? capitalGain * discountRate : capitalGain;
 
       matches.push({
         sellTradeId: sell.tradeId,
@@ -333,6 +369,7 @@ function matchAutomaticWithAvailable(
         sellProceeds: netProceeds,
         buyCostBase,
         capitalGain,
+        capitalLoss,
         cgtDiscountEligible: eligible,
         discountedGain,
       });
@@ -350,269 +387,6 @@ function matchAutomaticWithAvailable(
   const remainingParcels = parcels.filter((p) => p.unitsRemaining > 0);
 
   return { matches, unmatchedSells, remainingParcels };
-}
-
-function TradeInputSection({
-  csvText,
-  onCsvChange,
-  onParse,
-  onFileUpload,
-  onLoadSample,
-  error,
-  tradeCount,
-  brokerFormat,
-}: {
-  csvText: string;
-  onCsvChange: (text: string) => void;
-  onParse: () => void;
-  onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onLoadSample: () => void;
-  error: string;
-  tradeCount: number;
-  brokerFormat: string;
-}) {
-  return (
-    <section className="mb-8">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">Trade Data</h2>
-        <div className="flex gap-3">
-          <button
-            onClick={onLoadSample}
-            className="text-sm px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
-          >
-            Load Sample
-          </button>
-          <label className="text-sm px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors cursor-pointer">
-            Upload CSV
-            <input
-              type="file"
-              accept=".csv,.txt"
-              onChange={onFileUpload}
-              className="hidden"
-            />
-          </label>
-        </div>
-      </div>
-
-      <textarea
-        value={csvText}
-        onChange={(e) => onCsvChange(e.target.value)}
-        placeholder="Paste CSV data here...
-
-Expected columns: trade_id, match_id, date, action, code, units, price, brokerage, total
-
-Example:
-trade_id,match_id,date,action,code,units,price,brokerage,total
-T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
-        className="w-full h-40 bg-neutral-900 border border-neutral-700 rounded-lg p-4 font-mono text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
-      />
-
-      <div className="mt-3 flex items-center gap-4">
-        <button
-          onClick={onParse}
-          disabled={!csvText.trim()}
-          className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-700 disabled:text-neutral-500 text-white font-medium text-sm transition-colors"
-        >
-          Calculate CGT
-        </button>
-        {error && <span className="text-sm text-red-400">{error}</span>}
-        {tradeCount > 0 && !error && (
-          <span className="text-sm text-neutral-400">
-            {tradeCount} trades loaded
-          </span>
-        )}
-        {brokerFormat !== "unknown" && (
-          <span className="text-xs text-neutral-500 border border-neutral-700 rounded px-2 py-0.5">
-            Format: {brokerFormat}
-          </span>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function FilterToolbar({
-  financialYears,
-  selectedFy,
-  onFyChange,
-  onExport,
-  hasResults,
-}: {
-  financialYears: number[];
-  selectedFy: number | null;
-  onFyChange: (fy: number | null) => void;
-  onExport: () => void;
-  hasResults: boolean;
-}) {
-  return (
-    <section className="mb-8">
-      <div className="flex flex-wrap items-center gap-4">
-        {financialYears.length > 1 && (
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor="fy-select"
-              className="text-sm text-neutral-400"
-            >
-              Financial Year
-            </label>
-            <select
-              id="fy-select"
-              value={selectedFy ?? ""}
-              onChange={(e) =>
-                onFyChange(
-                  e.target.value ? parseInt(e.target.value, 10) : null,
-                )
-              }
-              className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">All Years</option>
-              {financialYears.map((fy) => (
-                <option key={fy} value={fy}>
-                  {getFinancialYearLabel(fy)}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        <button
-          onClick={onExport}
-          disabled={!hasResults}
-          className="text-sm px-4 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-300 transition-colors flex items-center gap-2"
-        >
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
-          Export Report
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function StrategySelector({
-  strategy,
-  onStrategyChange,
-  lockedCount,
-}: {
-  strategy: MatchStrategy;
-  onStrategyChange: (s: MatchStrategy) => void;
-  lockedCount: number;
-}) {
-  return (
-    <section className="mb-8">
-      <h2 className="text-lg font-semibold mb-4">Matching Strategy</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {strategies.map((s) => (
-          <button
-            key={s}
-            onClick={() => onStrategyChange(s)}
-            className={`text-left p-3 rounded-lg border transition-colors ${
-              strategy === s
-                ? "border-blue-500 bg-blue-500/10 text-blue-300"
-                : "border-neutral-700 bg-neutral-900 hover:border-neutral-600 text-neutral-300"
-            }`}
-          >
-            <div className="font-medium text-sm">
-              {STRATEGY_LABELS[s]}
-            </div>
-            <div className="mt-1 text-xs text-neutral-500 leading-relaxed">
-              {STRATEGY_DESCRIPTIONS[s]}
-            </div>
-          </button>
-        ))}
-      </div>
-      {lockedCount > 0 && (
-        <div className="mt-3 text-sm text-neutral-400">
-          <span className="text-amber-400 font-medium">
-            {lockedCount} match{lockedCount !== 1 ? "es" : ""} locked
-          </span>{" "}
-          — locked matches are preserved when switching strategies
-        </div>
-      )}
-    </section>
-  );
-}
-
-function SummaryCards({ summary }: { summary: CgtSummary }) {
-  return (
-    <section className="mb-8">
-      <h2 className="text-lg font-semibold mb-4">CGT Summary</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <SummaryCard
-          label="Total Proceeds"
-          value={formatCurrency(summary.totalProceeds)}
-        />
-        <SummaryCard
-          label="Total Cost Base"
-          value={formatCurrency(summary.totalCostBase)}
-        />
-        <SummaryCard
-          label="Capital Gain (Before Discount)"
-          value={formatCurrency(summary.totalCapitalGain)}
-          highlight={
-            summary.totalCapitalGain > 0
-              ? "text-green-400"
-              : summary.totalCapitalGain < 0
-                ? "text-red-400"
-                : ""
-          }
-        />
-        <SummaryCard
-          label="Taxable Capital Gain (After 50% Discount)"
-          value={formatCurrency(summary.totalDiscountedGain)}
-          highlight={
-            summary.totalDiscountedGain > 0
-              ? "text-green-400"
-              : summary.totalDiscountedGain < 0
-                ? "text-red-400"
-                : ""
-          }
-        />
-      </div>
-      {summary.totalDiscountAmount > 0 && (
-        <div className="mt-3 text-sm text-neutral-400">
-          CGT Discount saved:{" "}
-          <span className="text-green-400 font-medium">
-            {formatCurrency(summary.totalDiscountAmount)}
-          </span>{" "}
-          ({summary.matchCount} matches)
-        </div>
-      )}
-    </section>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  highlight = "",
-}: {
-  label: string;
-  value: string;
-  highlight?: string;
-}) {
-  return (
-    <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-      <div className="text-xs text-neutral-500 uppercase tracking-wider">
-        {label}
-      </div>
-      <div
-        className={`mt-1 text-xl font-semibold ${highlight || "text-neutral-100"}`}
-      >
-        {value}
-      </div>
-    </div>
-  );
 }
 
 export default function CgtCalculator() {
@@ -633,6 +407,10 @@ export default function CgtCalculator() {
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [financialYears, setFinancialYears] = useState<number[]>([]);
   const [brokerFormat, setBrokerFormat] = useState<string>("unknown");
+  const [entityType, setEntityType] = useState<EntityType>("individual");
+  const [lossCarryForwardHistory, setLossCarryForwardHistory] = useState<
+    { fy: number; amount: number }[]
+  >([]);
 
   const applyResults = useCallback(
     (
@@ -641,11 +419,29 @@ export default function CgtCalculator() {
         unmatchedSells: Trade[];
         remainingParcels: Parcel[];
       },
+      fy: number | null,
     ) => {
       setMatches(result.matches);
       setUnmatchedSells(result.unmatchedSells);
       setRemainingParcels(result.remainingParcels);
-      setSummary(calculateCgtSummary(result));
+      const newSummary = calculateCgtSummary(result);
+      setSummary(newSummary);
+      if (fy !== null) {
+        setLossCarryForwardHistory(
+          (prev: { fy: number; amount: number }[]) => {
+            if (newSummary.carryForwardLoss <= 0) {
+              return prev.filter((h: { fy: number; amount: number }) => h.fy !== fy);
+            }
+            const existing = prev.find((h: { fy: number; amount: number }) => h.fy === fy);
+            if (existing) {
+              return prev.map((h: { fy: number; amount: number }) =>
+                h.fy === fy ? { ...h, amount: newSummary.carryForwardLoss } : h,
+              );
+            }
+            return [...prev, { fy, amount: newSummary.carryForwardLoss }];
+          },
+        );
+      }
     },
     [],
   );
@@ -665,28 +461,30 @@ export default function CgtCalculator() {
       const fy = years.length > 0 ? years[0] : null;
       setSelectedFy(fy);
       const filtered = fy ? filterTradesByFinancialYear(parsed, fy) : parsed;
-      const result = recalculate(filtered, strategy, lockedMatchKeys);
-      applyResults(result);
+      const discountRate = getCgtDiscountRate(entityType);
+      const result = recalculate(filtered, strategy, lockedMatchKeys, discountRate);
+      applyResults(result, fy);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to parse CSV");
     }
-  }, [csvText, strategy, lockedMatchKeys, applyResults]);
+  }, [csvText, strategy, lockedMatchKeys, applyResults, entityType]);
 
   const handleStrategyChange = useCallback(
     (newStrategy: MatchStrategy) => {
       setStrategy(newStrategy);
       if (trades.length > 0) {
-        const result = recalculate(trades, newStrategy, lockedMatchKeys);
-        applyResults(result);
+        const discountRate = getCgtDiscountRate(entityType);
+        const result = recalculate(trades, newStrategy, lockedMatchKeys, discountRate);
+        applyResults(result, selectedFy);
       }
     },
-    [trades, lockedMatchKeys, applyResults],
+    [trades, lockedMatchKeys, applyResults, selectedFy, entityType],
   );
 
   const handleToggleLock = useCallback(
     (m: Match) => {
       const key = matchKey(m);
-      const next = new Set(lockedMatchKeys);
+      const next = new Set<string>(lockedMatchKeys);
       if (next.has(key)) {
         next.delete(key);
       } else {
@@ -694,11 +492,12 @@ export default function CgtCalculator() {
       }
       setLockedMatchKeys(next);
       if (trades.length > 0) {
-        const result = recalculate(trades, strategy, next);
-        applyResults(result);
+        const discountRate = getCgtDiscountRate(entityType);
+        const result = recalculate(trades, strategy, next, discountRate);
+        applyResults(result, selectedFy);
       }
     },
-    [lockedMatchKeys, trades, strategy, applyResults],
+    [lockedMatchKeys, trades, strategy, applyResults, selectedFy, entityType],
   );
 
   const handleLockAll = useCallback(() => {
@@ -715,10 +514,11 @@ export default function CgtCalculator() {
       const filtered = selectedFy
         ? filterTradesByFinancialYear(trades, selectedFy)
         : trades;
-      const result = recalculate(filtered, strategy, new Set());
-      applyResults(result);
+      const discountRate = getCgtDiscountRate(entityType);
+      const result = recalculate(filtered, strategy, new Set<string>(), discountRate);
+      applyResults(result, selectedFy);
     }
-  }, [trades, strategy, selectedFy, applyResults]);
+  }, [trades, strategy, selectedFy, applyResults, entityType]);
 
   const handleFyChange = useCallback(
     (fy: number | null) => {
@@ -727,11 +527,12 @@ export default function CgtCalculator() {
         const filtered = fy
           ? filterTradesByFinancialYear(trades, fy)
           : trades;
-        const result = recalculate(filtered, strategy, lockedMatchKeys);
-        applyResults(result);
+        const discountRate = getCgtDiscountRate(entityType);
+        const result = recalculate(filtered, strategy, lockedMatchKeys, discountRate);
+        applyResults(result, fy);
       }
     },
-    [trades, strategy, lockedMatchKeys, applyResults],
+    [trades, strategy, lockedMatchKeys, applyResults, entityType],
   );
 
   const handleExport = useCallback(() => {
@@ -777,6 +578,7 @@ export default function CgtCalculator() {
           "",
           "",
           "",
+          "",
           "Unmatched",
         ].join(","),
       );
@@ -792,6 +594,20 @@ export default function CgtCalculator() {
     a.click();
     URL.revokeObjectURL(url);
   }, [matches, unmatchedSells, selectedFy]);
+
+  const handleExportAto = useCallback(() => {
+    if (!summary || !matches.length) return;
+
+    const report = exportAtoReport(summary, matches, trades, selectedFy, entityType);
+    const blob = new Blob([report], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const fyLabel = selectedFy ? `_FY${selectedFy}` : "_all";
+    a.href = url;
+    a.download = `ato_report${fyLabel}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [summary, matches, trades, selectedFy, entityType]);
 
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -828,39 +644,298 @@ export default function CgtCalculator() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <TradeInputSection
-          csvText={csvText}
-          onCsvChange={setCsvText}
-          onParse={handleParse}
-          onFileUpload={handleFileUpload}
-          onLoadSample={loadSample}
-          error={error}
-          tradeCount={trades.length}
-          brokerFormat={brokerFormat}
-        />
+        {/* CSV Input Section */}
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Trade Data</h2>
+            <div className="flex gap-3">
+              <button
+                onClick={loadSample}
+                className="text-sm px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+              >
+                Load Sample
+              </button>
+              <label className="text-sm px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors cursor-pointer">
+                Upload CSV
+                <input
+                  type="file"
+                  accept=".csv,.txt"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
 
-        {trades.length > 0 && (
-          <FilterToolbar
-            financialYears={financialYears}
-            selectedFy={selectedFy}
-            onFyChange={handleFyChange}
-            onExport={handleExport}
-            hasResults={matches.length > 0 || unmatchedSells.length > 0}
+          <textarea
+            value={csvText}
+            onChange={(e) => setCsvText(e.target.value)}
+            placeholder="Paste CSV data here...
+
+Expected columns: trade_id, match_id, date, action, code, units, price, brokerage, total
+
+Example:
+trade_id,match_id,date,action,code,units,price,brokerage,total
+T001,,2021-01-20,Buy,LRSOC,135175,0.03905,9.5,5288.06"
+            className="w-full h-40 bg-neutral-900 border border-neutral-700 rounded-lg p-4 font-mono text-sm text-neutral-200 placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
           />
+
+          <div className="mt-3 flex items-center gap-4">
+            <button
+              onClick={handleParse}
+              disabled={!csvText.trim()}
+              className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-700 disabled:text-neutral-500 text-white font-medium text-sm transition-colors"
+            >
+              Calculate CGT
+            </button>
+            {error && <span className="text-sm text-red-400">{error}</span>}
+            {trades.length > 0 && !error && (
+              <span className="text-sm text-neutral-400">
+                {trades.length} trades loaded
+              </span>
+            )}
+            {brokerFormat !== "unknown" && (
+              <span className="text-xs text-neutral-500 border border-neutral-700 rounded px-2 py-0.5">
+                Format: {brokerFormat}
+              </span>
+            )}
+          </div>
+        </section>
+
+        {/* FY Filter & Export Toolbar */}
+        {trades.length > 0 && (
+          <section className="mb-8">
+            <div className="flex flex-wrap items-center gap-4">
+              {financialYears.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <label
+                    htmlFor="fy-select"
+                    className="text-sm text-neutral-400"
+                  >
+                    Financial Year
+                  </label>
+                  <select
+                    id="fy-select"
+                    value={selectedFy ?? ""}
+                    onChange={(e) =>
+                      handleFyChange(
+                        e.target.value ? parseInt(e.target.value, 10) : null,
+                      )
+                    }
+                    className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">All Years</option>
+                    {financialYears.map((fy) => (
+                      <option key={fy} value={fy}>
+                        {getFinancialYearLabel(fy)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="entity-type-select"
+                  className="text-sm text-neutral-400"
+                >
+                  Entity Type
+                </label>
+                <select
+                  id="entity-type-select"
+                  value={entityType}
+                  onChange={(e) => {
+                    setEntityType(e.target.value as EntityType);
+                    if (trades.length > 0) {
+                      const discountRate = getCgtDiscountRate(e.target.value as EntityType);
+                      const filtered = selectedFy
+                        ? filterTradesByFinancialYear(trades, selectedFy)
+                        : trades;
+                      const result = recalculate(filtered, strategy, lockedMatchKeys, discountRate);
+                      applyResults(result, selectedFy);
+                    }
+                  }}
+                  className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {(Object.keys(ENTITY_TYPE_LABELS) as EntityType[]).map((et) => (
+                    <option key={et} value={et}>
+                      {ENTITY_TYPE_LABELS[et]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                onClick={handleExport}
+                disabled={!matches.length && !unmatchedSells.length}
+                className="text-sm px-4 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-300 transition-colors flex items-center gap-2"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                  />
+                </svg>
+                Export Report
+              </button>
+              <button
+                onClick={handleExportAto}
+                disabled={!matches.length && !unmatchedSells.length}
+                className="text-sm px-4 py-1.5 rounded-md bg-blue-900 hover:bg-blue-800 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-200 transition-colors flex items-center gap-2"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                  />
+                </svg>
+                Export ATO Report
+              </button>
+            </div>
+          </section>
         )}
 
+        {/* Strategy Selector */}
         {trades.length > 0 && (
-          <StrategySelector
-            strategy={strategy}
-            onStrategyChange={handleStrategyChange}
-            lockedCount={lockedCount}
-          />
+          <section className="mb-8">
+            <h2 className="text-lg font-semibold mb-4">Matching Strategy</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {strategies.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => handleStrategyChange(s)}
+                  className={`text-left p-3 rounded-lg border transition-colors ${
+                    strategy === s
+                      ? "border-blue-500 bg-blue-500/10 text-blue-300"
+                      : "border-neutral-700 bg-neutral-900 hover:border-neutral-600 text-neutral-300"
+                  }`}
+                >
+                  <div className="font-medium text-sm">
+                    {STRATEGY_LABELS[s]}
+                  </div>
+                  <div className="mt-1 text-xs text-neutral-500 leading-relaxed">
+                    {STRATEGY_DESCRIPTIONS[s]}
+                  </div>
+                </button>
+              ))}
+            </div>
+            {lockedCount > 0 && (
+              <div className="mt-3 text-sm text-neutral-400">
+                <span className="text-amber-400 font-medium">
+                  {lockedCount} match{lockedCount !== 1 ? "es" : ""} locked
+                </span>{" "}
+                — locked matches are preserved when switching strategies
+              </div>
+            )}
+          </section>
         )}
 
+        {/* Summary Cards */}
         {summary && (
-          <SummaryCards summary={summary} />
+          <section className="mb-8">
+            <h2 className="text-lg font-semibold mb-4">CGT Summary</h2>
+            {(() => {
+              const discountRate = getCgtDiscountRate(entityType);
+              const discountPct = Math.round(discountRate * 100);
+              const estimatedTax = calculateEstimatedTax(summary.totalDiscountedGain, entityType);
+              const taxRateLabel = getTaxRateLabel(entityType);
+              return (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <SummaryCard
+                      label="Total Proceeds"
+                      value={formatCurrency(summary.totalProceeds)}
+                    />
+                    <SummaryCard
+                      label="Total Cost Base"
+                      value={formatCurrency(summary.totalCostBase)}
+                    />
+                    <SummaryCard
+                      label="Net Capital Gain/Loss (Before Discount)"
+                      value={formatCurrency(summary.totalCapitalGain)}
+                      highlight={
+                        summary.totalCapitalGain > 0
+                          ? "text-green-400"
+                          : summary.totalCapitalGain < 0
+                            ? "text-red-400"
+                            : ""
+                      }
+                    />
+                    <SummaryCard
+                      label={`Taxable Capital Gain (After ${discountPct}% Discount)`}
+                      value={formatCurrency(summary.totalDiscountedGain)}
+                      highlight={
+                        summary.totalDiscountedGain > 0
+                          ? "text-green-400"
+                          : summary.totalDiscountedGain < 0
+                            ? "text-red-400"
+                            : ""
+                      }
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+                    <SummaryCard
+                      label="Total Capital Losses"
+                      value={formatCurrency(summary.totalCapitalLoss)}
+                      highlight={summary.totalCapitalLoss > 0 ? "text-red-400" : ""}
+                    />
+                    <SummaryCard
+                      label="Net Capital Gain/Loss"
+                      value={formatCurrency(summary.netCapitalGain)}
+                      highlight={
+                        summary.netCapitalGain > 0
+                          ? "text-green-400"
+                          : summary.netCapitalGain < 0
+                            ? "text-red-400"
+                            : ""
+                      }
+                    />
+                    <SummaryCard
+                      label="Carry Forward to Next FY"
+                      value={formatCurrency(summary.carryForwardLoss)}
+                      highlight={
+                        summary.carryForwardLoss > 0 ? "text-amber-400" : ""
+                      }
+                    />
+                    <SummaryCard
+                      label={`Estimated Tax Payable (${taxRateLabel})`}
+                      value={estimatedTax > 0 ? formatCurrency(estimatedTax) : "—"}
+                    />
+                  </div>
+                </>
+              );
+            })()}
+            {summary.totalDiscountAmount > 0 && (
+              <div className="mt-3 text-sm text-neutral-400">
+                CGT Discount saved:{" "}
+                <span className="text-green-400 font-medium">
+                  {formatCurrency(summary.totalDiscountAmount)}
+                </span>{" "}
+                ({summary.matchCount} matches)
+              </div>
+            )}
+            {getActiveAssetExemptionNote(entityType) && (
+              <div className="mt-3 text-sm text-neutral-400 border border-neutral-800 rounded-lg p-3 bg-neutral-900/50">
+                <span className="text-amber-400 font-medium">Note: </span>
+                {getActiveAssetExemptionNote(entityType)}
+              </div>
+            )}
+          </section>
         )}
 
+        {/* Tab Navigation */}
         {trades.length > 0 && (
           <section>
             <div className="flex border-b border-neutral-800 mb-4">
@@ -893,6 +968,7 @@ export default function CgtCalculator() {
                 onToggleLock={handleToggleLock}
                 onLockAll={handleLockAll}
                 onUnlockAll={handleUnlockAll}
+                entityType={entityType}
               />
             )}
             {activeTab === "parcels" && (
@@ -913,7 +989,437 @@ export default function CgtCalculator() {
             )}
           </section>
         )}
+
+        {/* Loss Carry-Forward History */}
+        {lossCarryForwardHistory.length > 0 && (
+          <section className="mt-8">
+            <h2 className="text-lg font-semibold mb-4">
+              Capital Loss Carry-Forward History
+            </h2>
+            <LossCarryForwardTable
+              entries={lossCarryForwardHistory}
+              getFinancialYearLabel={getFinancialYearLabel}
+            />
+          </section>
+        )}
       </main>
+    </div>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  highlight = "",
+}: {
+  label: string;
+  value: string;
+  highlight?: string;
+}) {
+  return (
+    <div className="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
+      <div className="text-xs text-neutral-500 uppercase tracking-wider">
+        {label}
+      </div>
+      <div
+        className={`mt-1 text-xl font-semibold ${highlight || "text-neutral-100"}`}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function MatchResultsTable({
+  matches,
+  unmatchedSells,
+  lockedMatchKeys,
+  onToggleLock,
+  onLockAll,
+  onUnlockAll,
+  entityType,
+}: {
+  matches: Match[];
+  unmatchedSells: Trade[];
+  lockedMatchKeys: Set<string>;
+  onToggleLock: (m: Match) => void;
+  onLockAll: () => void;
+  onUnlockAll: () => void;
+  entityType: EntityType;
+}) {
+  return (
+    <div>
+      {matches.length > 0 && (
+        <div className="flex items-center justify-end gap-2 mb-3">
+          <button
+            onClick={onLockAll}
+            className="text-xs px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+          >
+            Lock All
+          </button>
+          <button
+            onClick={onUnlockAll}
+            className="text-xs px-3 py-1.5 rounded-md bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors"
+          >
+            Unlock All
+          </button>
+        </div>
+      )}
+
+      {matches.length > 0 ? (
+        <div className="overflow-x-auto rounded-lg border border-neutral-800">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-neutral-900 text-neutral-400 text-left">
+                <th className="px-4 py-3 font-medium w-10">
+                  <span className="sr-only">Lock</span>
+                </th>
+                <th className="px-4 py-3 font-medium">Code</th>
+                <th className="px-4 py-3 font-medium text-right">Units</th>
+                <th className="px-4 py-3 font-medium">Buy Date</th>
+                <th className="px-4 py-3 font-medium">Sell Date</th>
+                <th className="px-4 py-3 font-medium">Held</th>
+                <th className="px-4 py-3 font-medium text-right">Proceeds</th>
+                <th className="px-4 py-3 font-medium text-right">Cost Base</th>
+                <th className="px-4 py-3 font-medium text-right">
+                  Capital Gain
+                </th>
+                <th className="px-4 py-3 font-medium text-center">
+                  CGT Discount
+                </th>
+                <th className="px-4 py-3 font-medium text-right">
+                  Taxable Gain
+                </th>
+                <th className="px-4 py-3 font-medium">Sell ID</th>
+                <th className="px-4 py-3 font-medium">Buy ID</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-800">
+              {matches.map((m, i) => {
+                const key = matchKey(m);
+                const locked = lockedMatchKeys.has(key);
+                const heldDays = getHeldDays(m.buyDate, m.sellDate);
+                return (
+                  <tr
+                    key={`${key}-${i}`}
+                    className={`transition-colors ${
+                      locked
+                        ? "bg-amber-500/5"
+                        : "bg-neutral-950 hover:bg-neutral-900/50"
+                    }`}
+                  >
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => onToggleLock(m)}
+                        title={locked ? "Unlock match" : "Lock match"}
+                        className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
+                          locked
+                            ? "bg-amber-500/20 border-amber-500 text-amber-400"
+                            : "border-neutral-600 hover:border-neutral-400"
+                        }`}
+                      >
+                        {locked ? (
+                          <svg
+                            className="w-3 h-3"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2.5}
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                            />
+                          </svg>
+                        ) : null}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 font-mono font-medium">
+                      {m.code}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono">
+                      {m.units.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3">{formatDate(m.buyDate)}</td>
+                    <td className="px-4 py-3">{formatDate(m.sellDate)}</td>
+                    <td className="px-4 py-3 text-neutral-400">
+                      {heldDays}d
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono">
+                      {formatCurrency(m.sellProceeds)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono">
+                      {formatCurrency(m.buyCostBase)}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right font-mono ${
+                        m.capitalGain >= 0 ? "text-green-400" : "text-red-400"
+                      }`}
+                    >
+                      {formatCurrency(m.capitalGain)}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {m.cgtDiscountEligible ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+                          {Math.round(getCgtDiscountRate(entityType) * 100)}%
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-neutral-800 text-neutral-500">
+                          No
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right font-mono font-medium ${
+                        m.discountedGain >= 0
+                          ? "text-green-400"
+                          : "text-red-400"
+                      }`}
+                    >
+                      {formatCurrency(m.discountedGain)}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-neutral-400 text-xs">
+                      {m.sellTradeId}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-neutral-400 text-xs">
+                      {m.buyTradeId}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="bg-neutral-900 font-medium">
+                <td />
+                <td className="px-4 py-3" colSpan={4}>
+                  Total ({matches.length} matches)
+                </td>
+                <td />
+                <td className="px-4 py-3 text-right font-mono">
+                  {formatCurrency(
+                    matches.reduce((s, m) => s + m.sellProceeds, 0),
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right font-mono">
+                  {formatCurrency(
+                    matches.reduce((s, m) => s + m.buyCostBase, 0),
+                  )}
+                </td>
+                <td
+                  className={`px-4 py-3 text-right font-mono ${
+                    matches.reduce((s, m) => s + m.capitalGain, 0) >= 0
+                      ? "text-green-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {formatCurrency(
+                    matches.reduce((s, m) => s + m.capitalGain, 0),
+                  )}
+                </td>
+                <td />
+                <td
+                  className={`px-4 py-3 text-right font-mono ${
+                    matches.reduce((s, m) => s + m.discountedGain, 0) >= 0
+                      ? "text-green-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {formatCurrency(
+                    matches.reduce((s, m) => s + m.discountedGain, 0),
+                  )}
+                </td>
+                <td colSpan={2} />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      ) : (
+        <div className="text-sm text-neutral-500 py-8 text-center border border-neutral-800 rounded-lg">
+          No matches found. Try a different strategy or add more buy trades.
+        </div>
+      )}
+
+      {unmatchedSells.length > 0 && (
+        <div className="mt-4 p-4 rounded-lg border border-amber-500/30 bg-amber-500/5">
+          <h3 className="text-sm font-medium text-amber-400 mb-2">
+            Unmatched Sells ({unmatchedSells.length})
+          </h3>
+          <div className="text-sm text-neutral-400">
+            {unmatchedSells.map((s) => (
+              <div key={s.tradeId} className="flex gap-4 py-1">
+                <span className="font-mono text-amber-300">{s.tradeId}</span>
+                <span>
+                  {s.code} &mdash; {s.units.toLocaleString()} units on{" "}
+                  {formatDate(s.date)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ParcelsTable({ parcels }: { parcels: Parcel[] }) {
+  if (parcels.length === 0) {
+    return (
+      <div className="text-sm text-neutral-500 py-8 text-center">
+        All parcels have been fully matched.
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-neutral-800">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-neutral-900 text-neutral-400 text-left">
+            <th className="px-4 py-3 font-medium">Buy ID</th>
+            <th className="px-4 py-3 font-medium">Code</th>
+            <th className="px-4 py-3 font-medium">Date</th>
+            <th className="px-4 py-3 font-medium text-right">Original Units</th>
+            <th className="px-4 py-3 font-medium text-right">
+              Remaining Units
+            </th>
+            <th className="px-4 py-3 font-medium text-right">
+              Cost Base/Unit
+            </th>
+            <th className="px-4 py-3 font-medium text-right">
+              Remaining Cost Base
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-800">
+          {parcels.map((p) => (
+            <tr
+              key={p.tradeId}
+              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
+            >
+              <td className="px-4 py-3 font-mono">{p.tradeId}</td>
+              <td className="px-4 py-3 font-mono font-medium">{p.code}</td>
+              <td className="px-4 py-3">{formatDate(p.date)}</td>
+              <td className="px-4 py-3 text-right font-mono">
+                {p.totalUnits.toLocaleString()}
+              </td>
+              <td className="px-4 py-3 text-right font-mono">
+                {p.unitsRemaining.toLocaleString()}
+              </td>
+              <td className="px-4 py-3 text-right font-mono">
+                {formatCurrency(p.costBasePerUnit)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono">
+                {formatCurrency(p.costBasePerUnit * p.unitsRemaining)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TradesTable({ trades }: { trades: Trade[] }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-neutral-800">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-neutral-900 text-neutral-400 text-left">
+            <th className="px-4 py-3 font-medium">ID</th>
+            <th className="px-4 py-3 font-medium">Match ID</th>
+            <th className="px-4 py-3 font-medium">Date</th>
+            <th className="px-4 py-3 font-medium">Action</th>
+            <th className="px-4 py-3 font-medium">Code</th>
+            <th className="px-4 py-3 font-medium text-right">Units</th>
+            <th className="px-4 py-3 font-medium text-right">Price</th>
+            <th className="px-4 py-3 font-medium text-right">Brokerage</th>
+            <th className="px-4 py-3 font-medium text-right">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-800">
+          {trades.map((t) => (
+            <tr
+              key={t.tradeId}
+              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
+            >
+              <td className="px-4 py-3 font-mono">{t.tradeId}</td>
+              <td className="px-4 py-3 font-mono text-neutral-500">
+                {t.matchId || "\u2014"}
+              </td>
+              <td className="px-4 py-3">{formatDate(t.date)}</td>
+              <td className="px-4 py-3">
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                    t.action === "Buy"
+                      ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                      : "bg-orange-500/10 text-orange-400 border border-orange-500/20"
+                  }`}
+                >
+                  {t.action}
+                </span>
+              </td>
+              <td className="px-4 py-3 font-mono font-medium">{t.code}</td>
+              <td className="px-4 py-3 text-right font-mono">
+                {t.units.toLocaleString()}
+              </td>
+              <td className="px-4 py-3 text-right font-mono">
+                {formatCurrency(t.price)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono">
+                {formatCurrency(t.brokerage)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono">
+                {formatCurrency(t.total)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LossCarryForwardTable({
+  entries,
+  getFinancialYearLabel,
+}: {
+  entries: { fy: number; amount: number }[];
+  getFinancialYearLabel: (fy: number) => string;
+}) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-amber-500/30 bg-amber-500/5">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-neutral-900 text-neutral-400 text-left">
+            <th className="px-4 py-3 font-medium">Financial Year</th>
+            <th className="px-4 py-3 font-medium text-right">
+              Carry-Forward Amount
+            </th>
+            <th className="px-4 py-3 font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-800">
+          {entries.map((entry, i) => (
+            <tr
+              key={`${entry.fy}-${i}`}
+              className="bg-neutral-950 hover:bg-neutral-900/50 transition-colors"
+            >
+              <td className="px-4 py-3">
+                {getFinancialYearLabel(entry.fy)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-amber-400">
+                {formatCurrency(entry.amount)}
+              </td>
+              <td className="px-4 py-3">
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  Carried Forward
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
