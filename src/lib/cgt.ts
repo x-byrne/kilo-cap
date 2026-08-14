@@ -330,8 +330,9 @@ function matchManual(trades: Trade[]): {
           (matchedUnits / buy.units) * buy.brokerage;
 
         const capitalGain = netProceeds - buyCostBase;
+        const capitalLoss = Math.max(0, -capitalGain);
         const eligible = isCgtDiscountEligible(buy.date, sell.date);
-        const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+        const discountedGain = eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
         matches.push({
           sellTradeId: sell.tradeId,
@@ -343,6 +344,7 @@ function matchManual(trades: Trade[]): {
           sellProceeds: netProceeds,
           buyCostBase,
           capitalGain,
+          capitalLoss,
           cgtDiscountEligible: eligible,
           discountedGain,
         });
@@ -429,8 +431,9 @@ function matchAutomatic(
         (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
 
       const capitalGain = netProceeds - buyCostBase;
+      const capitalLoss = Math.max(0, -capitalGain);
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
-      const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+      const discountedGain = eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
       matches.push({
         sellTradeId: sell.tradeId,
@@ -442,6 +445,7 @@ function matchAutomatic(
         sellProceeds: netProceeds,
         buyCostBase,
         capitalGain,
+        capitalLoss,
         cgtDiscountEligible: eligible,
         discountedGain,
       });
@@ -469,23 +473,30 @@ export function calculateCgtSummary(result: {
   let totalProceeds = 0;
   let totalCostBase = 0;
   let totalCapitalGain = 0;
+  let totalCapitalLoss = 0;
   let totalDiscountedGain = 0;
 
   for (const m of result.matches) {
     totalProceeds += m.sellProceeds;
     totalCostBase += m.buyCostBase;
     totalCapitalGain += m.capitalGain;
+    totalCapitalLoss += Math.max(0, -m.capitalGain);
     totalDiscountedGain += m.discountedGain;
   }
 
+  const netCapitalGain = totalCapitalGain;
+  const carryForwardLoss = Math.max(0, -netCapitalGain);
   const totalDiscountAmount = totalCapitalGain - totalDiscountedGain;
 
   return {
     totalProceeds,
     totalCostBase,
     totalCapitalGain,
+    totalCapitalLoss,
+    netCapitalGain,
     totalDiscountedGain,
     totalDiscountAmount,
+    carryForwardLoss,
     matchCount: result.matches.length,
     unmatchedSells: result.unmatchedSells,
     remainingParcels: result.remainingParcels,

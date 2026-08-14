@@ -278,41 +278,67 @@ test("no CGT discount when held <= 365 days", () => {
 // ─── calculateCgtSummary ─────────────────────────────────────────────────────
 
 test("calculateCgtSummary aggregates correctly", () => {
-  const matches: Match[] = [
-    {
-      sellTradeId: "S1",
-      buyTradeId: "B1",
-      code: "BHP",
-      units: 100,
-      sellDate: "2024-01-15",
-      buyDate: "2023-01-01",
-      sellProceeds: 3000,
-      buyCostBase: 1000,
-      capitalGain: 2000,
-      cgtDiscountEligible: true,
-      discountedGain: 1000,
-    },
-    {
-      sellTradeId: "S2",
-      buyTradeId: "B2",
-      code: "BHP",
-      units: 50,
-      sellDate: "2024-06-01",
-      buyDate: "2023-06-01",
-      sellProceeds: 1500,
-      buyCostBase: 1000,
-      capitalGain: 500,
-      cgtDiscountEligible: true,
-      discountedGain: 250,
-    },
+  const trades = [
+    makeTrade({ tradeId: "B1", date: "2023-01-01", units: 100, price: 10, brokerage: 0 }),
+    makeTrade({ tradeId: "S1", date: "2024-01-15", action: "Sell", units: 100, price: 30, brokerage: 0 }),
+    makeTrade({ tradeId: "B2", date: "2023-06-01", units: 50, price: 20, brokerage: 0 }),
+    makeTrade({ tradeId: "S2", date: "2024-06-01", action: "Sell", units: 50, price: 30, brokerage: 0 }),
   ];
-  const summary = calculateCgtSummary({ matches, unmatchedSells: [], remainingParcels: [] });
+  const result = matchTrades(trades, "fifo");
+  const summary = calculateCgtSummary(result);
   expect(summary.totalProceeds).toBe(4500);
   expect(summary.totalCostBase).toBe(2000);
   expect(summary.totalCapitalGain).toBe(2500);
+  expect(summary.totalCapitalLoss).toBe(0);
+  expect(summary.netCapitalGain).toBe(2500);
   expect(summary.totalDiscountedGain).toBe(1250);
   expect(summary.totalDiscountAmount).toBe(1250);
+  expect(summary.carryForwardLoss).toBe(0);
   expect(summary.matchCount).toBe(2);
+});
+
+test("calculateCgtSummary handles capital losses and carry-forward", () => {
+  const trades = [
+    makeTrade({ tradeId: "B1", date: "2023-01-01", units: 100, price: 30, brokerage: 0 }),
+    makeTrade({ tradeId: "S1", date: "2024-01-15", action: "Sell", units: 100, price: 20, brokerage: 0 }),
+  ];
+  const result = matchTrades(trades, "fifo");
+  const summary = calculateCgtSummary(result);
+  expect(summary.totalCapitalGain).toBe(-1000);
+  expect(summary.totalCapitalLoss).toBe(1000);
+  expect(summary.netCapitalGain).toBe(-1000);
+  expect(summary.carryForwardLoss).toBe(1000);
+  expect(summary.totalDiscountedGain).toBe(-1000);
+  expect(summary.totalDiscountAmount).toBe(0);
+});
+
+test("calculateCgtSummary handles mixed gains and losses", () => {
+  const trades = [
+    makeTrade({ tradeId: "B1", date: "2023-01-01", units: 100, price: 10, brokerage: 0 }),
+    makeTrade({ tradeId: "S1", date: "2024-01-15", action: "Sell", units: 100, price: 30, brokerage: 0 }),
+    makeTrade({ tradeId: "B2", date: "2023-06-01", units: 100, price: 30, brokerage: 0 }),
+    makeTrade({ tradeId: "S2", date: "2024-06-01", action: "Sell", units: 100, price: 20, brokerage: 0 }),
+  ];
+  const result = matchTrades(trades, "fifo");
+  const summary = calculateCgtSummary(result);
+  expect(summary.totalCapitalGain).toBe(1000);
+  expect(summary.totalCapitalLoss).toBe(1000);
+  expect(summary.netCapitalGain).toBe(1000);
+  expect(summary.carryForwardLoss).toBe(0);
+  expect(summary.totalDiscountedGain).toBe(0);
+  expect(summary.totalDiscountAmount).toBe(1000);
+});
+
+test("CGT discount is not applied to losses", () => {
+  const trades = [
+    makeTrade({ tradeId: "B1", date: "2023-01-01", units: 100, price: 30, brokerage: 0 }),
+    makeTrade({ tradeId: "S1", date: "2024-01-15", action: "Sell", units: 100, price: 20, brokerage: 0 }),
+  ];
+  const result = matchTrades(trades, "fifo");
+  expect(result.matches[0].capitalGain).toBe(-1000);
+  expect(result.matches[0].capitalLoss).toBe(1000);
+  expect(result.matches[0].cgtDiscountEligible).toBe(true);
+  expect(result.matches[0].discountedGain).toBe(-1000);
 });
 
 // ─── getFinancialYear & getFinancialYearLabel ─────────────────────────────────

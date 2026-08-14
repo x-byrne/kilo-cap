@@ -41,16 +41,20 @@ export interface Match {
   sellProceeds: number; // proportional proceeds for matched units
   buyCostBase: number; // proportional cost base for matched units
   capitalGain: number; // proceeds - cost base
+  capitalLoss: number; // max(0, -(proceeds - cost base))
   cgtDiscountEligible: boolean; // held > 12 months
-  discountedGain: number; // gain after 50% CGT discount if eligible
+  discountedGain: number; // gain/loss after 50% CGT discount if eligible and gain > 0
 }
 
 export interface CgtSummary {
   totalProceeds: number;
   totalCostBase: number;
   totalCapitalGain: number;
+  totalCapitalLoss: number;
+  netCapitalGain: number;
   totalDiscountedGain: number;
   totalDiscountAmount: number;
+  carryForwardLoss: number;
   matchCount: number;
   unmatchedSells: Trade[];
   remainingParcels: Parcel[];
