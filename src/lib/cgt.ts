@@ -15,7 +15,7 @@ export function parseCsv(csv: string): Trade[] {
   if (lines.length < 2) return [];
 
   const headerLine = lines[0].toLowerCase();
-  const headers = headerLine.split(",").map((h) => h.trim());
+  const headers = parseCsvLine(headerLine);
 
   const tradeIdIdx = headers.indexOf("trade_id");
   const matchIdIdx = headers.indexOf("match_id");
@@ -46,7 +46,8 @@ export function parseCsv(csv: string): Trade[] {
     const units = parseFloat(values[unitsIdx] || "0");
     const price = parseFloat(values[priceIdx] || "0");
     const brokerage = parseFloat(values[brokerageIdx] || "0");
-    const total = parseFloat(values[totalIdx] || "0");
+    const rawTotal = values[totalIdx]?.trim();
+    const total = rawTotal ? parseFloat(rawTotal) : NaN;
 
     validateTradeRow(
       i + 1,
@@ -65,7 +66,9 @@ export function parseCsv(csv: string): Trade[] {
       units,
       price,
       brokerage,
-      total: total || units * price + (action === "Buy" ? brokerage : -brokerage),
+      total: Number.isNaN(total)
+        ? units * price + (action === "Buy" ? brokerage : -brokerage)
+        : total,
     });
   }
 
@@ -87,6 +90,14 @@ function validateTradeRow(
   const d = new Date(date);
   if (isNaN(d.getTime())) {
     throw new Error(`Row ${lineNum}: Invalid date "${date}"`);
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (d > today) {
+    throw new Error(
+      `Row ${lineNum}: Date "${date}" cannot be in the future`,
+    );
   }
 
   if (Number.isNaN(units)) {
@@ -134,7 +145,12 @@ function parseCsvLine(line: string): string[] {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      inQuotes = !inQuotes;
+      if (line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
     } else if (ch === "," && !inQuotes) {
       result.push(current.trim());
       current = "";
@@ -174,7 +190,7 @@ export type BrokerFormat = "commsec" | "selfwealth" | "stake" | "tradezero" | "u
 
 export function detectBrokerFormat(csvText: string): BrokerFormat {
   const firstLine = csvText.trim().split("\n")[0]?.toLowerCase() ?? "";
-  const cols = firstLine.split(",").map((c) => c.trim());
+  const cols = parseCsvLine(firstLine);
 
   if (cols.some((c) => c === "activity" || c === "contract note" || c === "trade date")) {
     return "commsec";
@@ -505,6 +521,7 @@ export function formatCurrency(value: number): string {
 
 export function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
   return d.toLocaleDateString("en-AU", {
     day: "2-digit",
     month: "short",
