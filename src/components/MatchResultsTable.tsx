@@ -26,6 +26,7 @@ const MatchResultsTable = memo(function MatchResultsTable({
     sellProceeds: number;
     buyCostBase: number;
     capitalGain: number;
+    capitalLoss: number;
     cgtDiscountEligible: boolean;
     discountedGain: number;
   }[];
@@ -41,6 +42,7 @@ const MatchResultsTable = memo(function MatchResultsTable({
     sellProceeds: number;
     buyCostBase: number;
     capitalGain: number;
+    capitalLoss: number;
     cgtDiscountEligible: boolean;
     discountedGain: number;
   }) => void;
@@ -83,6 +85,9 @@ const MatchResultsTable = memo(function MatchResultsTable({
                 <th className="px-4 py-3 font-medium text-right">Cost Base</th>
                 <th className="px-4 py-3 font-medium text-right">
                   Capital Gain
+                </th>
+                <th className="px-4 py-3 font-medium text-right">
+                  Capital Loss
                 </th>
                 <th className="px-4 py-3 font-medium text-center">
                   CGT Discount
@@ -163,6 +168,13 @@ const MatchResultsTable = memo(function MatchResultsTable({
                     >
                       {formatCurrency(m.capitalGain)}
                     </td>
+                    <td
+                      className={`px-4 py-3 text-right font-mono ${
+                        m.capitalLoss > 0 ? "text-red-400" : "text-neutral-500"
+                      }`}
+                    >
+                      {formatCurrency(m.capitalLoss)}
+                    </td>
                     <td className="px-4 py-3 text-center">
                       {m.cgtDiscountEligible ? (
                         <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
@@ -210,15 +222,20 @@ const MatchResultsTable = memo(function MatchResultsTable({
                     matches.reduce((s, m) => s + m.buyCostBase, 0),
                   )}
                 </td>
+                <td className="px-4 py-3 text-right font-mono">
+                  {formatCurrency(
+                    matches.reduce((s, m) => s + m.capitalGain, 0),
+                  )}
+                </td>
                 <td
                   className={`px-4 py-3 text-right font-mono ${
-                    matches.reduce((s, m) => s + m.capitalGain, 0) >= 0
-                      ? "text-green-400"
-                      : "text-red-400"
+                    matches.reduce((s, m) => s + m.capitalLoss, 0) > 0
+                      ? "text-red-400"
+                      : "text-neutral-500"
                   }`}
                 >
                   {formatCurrency(
-                    matches.reduce((s, m) => s + m.capitalGain, 0),
+                    matches.reduce((s, m) => s + m.capitalLoss, 0),
                   )}
                 </td>
                 <td />

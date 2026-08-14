@@ -67,8 +67,9 @@ function buildMatchFromKey(
   const buyCostBase =
     buy.price * units + (units / buy.units) * buy.brokerage;
   const capitalGain = netProceeds - buyCostBase;
+  const capitalLoss = Math.max(0, -capitalGain);
   const eligible = isCgtDiscountEligible(buy.date, sell.date);
-  const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+  const discountedGain = eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
   return {
     sellTradeId: sell.tradeId,
@@ -80,6 +81,7 @@ function buildMatchFromKey(
     sellProceeds: netProceeds,
     buyCostBase,
     capitalGain,
+    capitalLoss,
     cgtDiscountEligible: eligible,
     discountedGain,
   };
@@ -230,8 +232,9 @@ function matchManualWithLocked(
           buy.price * matchedUnits +
           (matchedUnits / buy.units) * buy.brokerage;
         const capitalGain = netProceeds - buyCostBase;
+        const capitalLoss = Math.max(0, -capitalGain);
         const eligible = isCgtDiscountEligible(buy.date, sell.date);
-        const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+        const discountedGain = eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
         matches.push({
           sellTradeId: sell.tradeId,
@@ -243,6 +246,7 @@ function matchManualWithLocked(
           sellProceeds: netProceeds,
           buyCostBase,
           capitalGain,
+          capitalLoss,
           cgtDiscountEligible: eligible,
           discountedGain,
         });
@@ -320,8 +324,9 @@ function matchAutomaticWithAvailable(
       const buyCostBase =
         (parcel.totalCostBase / parcel.totalUnits) * matchedUnits;
       const capitalGain = netProceeds - buyCostBase;
+      const capitalLoss = Math.max(0, -capitalGain);
       const eligible = isCgtDiscountEligible(parcel.date, sell.date);
-      const discountedGain = eligible ? capitalGain * 0.5 : capitalGain;
+      const discountedGain = eligible && capitalGain > 0 ? capitalGain * 0.5 : capitalGain;
 
       matches.push({
         sellTradeId: sell.tradeId,
@@ -333,6 +338,7 @@ function matchAutomaticWithAvailable(
         sellProceeds: netProceeds,
         buyCostBase,
         capitalGain,
+        capitalLoss,
         cgtDiscountEligible: eligible,
         discountedGain,
       });
@@ -557,7 +563,7 @@ function SummaryCards({ summary }: { summary: CgtSummary }) {
           value={formatCurrency(summary.totalCostBase)}
         />
         <SummaryCard
-          label="Capital Gain (Before Discount)"
+          label="Net Capital Gain/Loss (Before Discount)"
           value={formatCurrency(summary.totalCapitalGain)}
           highlight={
             summary.totalCapitalGain > 0
@@ -578,6 +584,20 @@ function SummaryCards({ summary }: { summary: CgtSummary }) {
                 : ""
           }
         />
+        {summary.totalCapitalLoss > 0 && (
+          <SummaryCard
+            label="Capital Losses"
+            value={formatCurrency(summary.totalCapitalLoss)}
+            highlight="text-red-400"
+          />
+        )}
+        {summary.carryForwardLoss > 0 && (
+          <SummaryCard
+            label="Loss Carry-Forward"
+            value={formatCurrency(summary.carryForwardLoss)}
+            highlight="text-amber-400"
+          />
+        )}
       </div>
       {summary.totalDiscountAmount > 0 && (
         <div className="mt-3 text-sm text-neutral-400">
@@ -738,7 +758,7 @@ export default function CgtCalculator() {
     if (!matches.length && !unmatchedSells.length) return;
 
     const header =
-      "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,CGT Discount,Taxable Gain,Status";
+      "Sell ID,Buy ID,Code,Units,Buy Date,Sell Date,Held (days),Proceeds,Cost Base,Capital Gain,Capital Loss,CGT Discount,Taxable Gain,Status";
     const rows: string[] = [];
 
     for (const m of matches) {
@@ -755,6 +775,7 @@ export default function CgtCalculator() {
           m.sellProceeds.toFixed(2),
           m.buyCostBase.toFixed(2),
           m.capitalGain.toFixed(2),
+          m.capitalLoss.toFixed(2),
           m.cgtDiscountEligible ? "Yes" : "No",
           m.discountedGain.toFixed(2),
           "Matched",
